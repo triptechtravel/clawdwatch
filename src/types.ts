@@ -6,16 +6,57 @@ export type CheckType = 'api' | 'browser';
 
 export type CheckStatus = 'unknown' | 'healthy' | 'degraded' | 'unhealthy';
 
+// ── Assertions ──
+
+export type AssertionOperator = 'is' | 'isNot' | 'contains' | 'notContains' | 'matches' | 'lessThan' | 'greaterThan';
+
+export interface StatusCodeAssertion {
+  type: 'statusCode';
+  operator: 'is' | 'isNot';
+  value: number;
+}
+
+export interface HeaderAssertion {
+  type: 'header';
+  name: string;
+  operator: 'is' | 'isNot' | 'contains' | 'notContains' | 'matches';
+  value: string;
+}
+
+export interface BodyAssertion {
+  type: 'body';
+  operator: 'contains' | 'notContains' | 'matches';
+  value: string;
+}
+
+export interface ResponseTimeAssertion {
+  type: 'responseTime';
+  operator: 'lessThan';
+  value: number;
+}
+
+export type Assertion =
+  | StatusCodeAssertion
+  | HeaderAssertion
+  | BodyAssertion
+  | ResponseTimeAssertion;
+
+// ── Check Config ──
+
 export interface CheckConfig {
   id: string;
   name: string;
   type: CheckType;
   url: string;
-  expectedStatus?: number;
+  method?: string;
+  assertions?: Assertion[];
+  retry?: { count: number; delayMs: number };
   timeoutMs?: number;
   failureThreshold?: number;
   tags?: string[];
 }
+
+// ── State & Results ──
 
 export interface HistoryEntry {
   timestamp: string;
@@ -58,6 +99,8 @@ export interface AlertPayload {
   timestamp: string;
 }
 
+// ── Top-level Config ──
+
 export interface ClawdWatchOptions<TEnv> {
   checks: CheckConfig[];
   defaults?: {
@@ -71,6 +114,8 @@ export interface ClawdWatchOptions<TEnv> {
   getWorkerUrl?: (env: TEnv) => string | undefined;
   onAlert?: (alert: AlertPayload, env: TEnv) => Promise<void>;
 }
+
+// ── API Response Types ──
 
 export interface MonitoringCheckStatus {
   id: string;
