@@ -6,6 +6,7 @@ on:
     paths:
       - "docs/**"
       - "package.json"
+      - "package-lock.json"
       - ".github/workflows/deploy-docs.yml"
   workflow_dispatch:
 
@@ -26,9 +27,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 24
 
-      - run: npm ci
+      - run: npm install
 
       - run: npm run docs:build
 
