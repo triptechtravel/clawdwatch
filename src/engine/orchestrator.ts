@@ -16,7 +16,7 @@ import type {
 } from '../types';
 import { loadState, saveState, createEmptyCheckState } from './state';
 import { loadChecks } from './db';
-import { isInMaintenance, createIncident, resolveIncidents, loadAlertRules } from './db';
+import { isInMaintenance, createIncident, resolveIncidents, loadAlertRules, ensureResultsTable, insertCheckResult, pruneHistory } from './db';
 import { runCheck } from './runner';
 import { computeTransition } from './alerts';
 
@@ -46,6 +46,8 @@ export async function runMonitoringChecks<TEnv>(
   console.log(`[clawdwatch] Running ${checks.length} check(s)...`);
 
   const state = await loadState(bucket, defaults.stateKey);
+
+  await ensureResultsTable(db);
 
   for (const check of checks) {
     // Check maintenance window
@@ -85,6 +87,15 @@ export async function runMonitoringChecks<TEnv>(
       });
     }
 
+    // Write to D1 check_results (hot 24h window)
+    // eslint-disable-next-line no-await-in-loop
+    await insertCheckResult(
+      db, check.id, result.success ? 'healthy' : 'unhealthy',
+      result.responseTimeMs, result.error,
+    ).catch((err) => {
+      console.error(`[clawdwatch] Failed to insert check result for ${check.name}:`, err);
+    });
+
     // Compute state transition
     const { newState, alertType } = computeTransition(checkState, result, check.failure_threshold);
     state.checks[check.id] = newState;
@@ -123,6 +134,10 @@ export async function runMonitoringChecks<TEnv>(
 
   state.lastRun = new Date().toISOString();
   await saveState(bucket, defaults.stateKey, state);
+
+  await pruneHistory(db).catch((err) => {
+    console.error('[clawdwatch] Failed to prune check results:', err);
+  });
 
   console.log('[clawdwatch] Checks complete, state saved');
 }

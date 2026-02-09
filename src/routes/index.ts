@@ -29,6 +29,7 @@ import {
   listMaintenanceWindows,
   createMaintenanceWindow,
   deleteMaintenanceWindow,
+  loadHistory,
 } from '../engine/db';
 import { runCheck } from '../engine/runner';
 
@@ -52,8 +53,24 @@ export function createRoutes(config: RouteConfig): Hono {
       const state = await loadState(bucket, config.stateKey);
       const checks = await loadAllChecks(db);
 
+      // Load 24h history from D1 (graceful fallback if table doesn't exist yet)
+      const checkIds = checks.map((ch) => ch.id);
+      let historyMap = new Map<string, import('../types').HistoryEntry[]>();
+      try {
+        historyMap = await loadHistory(db, checkIds);
+      } catch (err) {
+        console.warn('[clawdwatch] Failed to load history, falling back to empty:', err);
+      }
+
       const checkStatuses: MonitoringCheckStatus[] = checks.map((check) => {
         const checkState = state.checks[check.id];
+        const history = historyMap.get(check.id) ?? [];
+        const totalEntries = history.length;
+        const healthyEntries = history.filter((h) => h.status === 'healthy').length;
+        const uptimePercent = totalEntries > 0
+          ? Math.round((healthyEntries / totalEntries) * 10000) / 100
+          : null;
+
         return {
           id: check.id,
           name: check.name,
@@ -66,8 +83,8 @@ export function createRoutes(config: RouteConfig): Hono {
           lastSuccess: checkState?.lastSuccess ?? null,
           lastError: checkState?.lastError ?? null,
           responseTimeMs: checkState?.responseTimeMs ?? null,
-          history: [],
-          uptimePercent: null,
+          history,
+          uptimePercent,
           enabled: check.enabled,
         };
       });

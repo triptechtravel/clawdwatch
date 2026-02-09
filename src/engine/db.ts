@@ -2,7 +2,7 @@
  * D1 database operations for check configs, incidents, alert rules, maintenance windows
  */
 
-import type { CheckConfig, CheckRow, Incident, AlertRule, MaintenanceWindow } from '../types';
+import type { CheckConfig, CheckRow, Incident, AlertRule, MaintenanceWindow, HistoryEntry } from '../types';
 
 /** Parse a D1 check row into a CheckConfig */
 export function parseCheckRow(row: CheckRow): CheckConfig {
@@ -285,4 +285,83 @@ export async function createMaintenanceWindow(
 export async function deleteMaintenanceWindow(db: D1Database, id: number): Promise<boolean> {
   const result = await db.prepare('DELETE FROM maintenance_windows WHERE id = ?').bind(id).run();
   return result.meta.changes > 0;
+}
+
+// ── Check Results (24h hot window) ──
+
+/** Auto-creates check_results table on first run. Idempotent. */
+export async function ensureResultsTable(db: D1Database): Promise<void> {
+  await db.batch([
+    db.prepare(`
+      CREATE TABLE IF NOT EXISTS check_results (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        check_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        response_time_ms REAL NOT NULL,
+        error TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `),
+    db.prepare(`
+      CREATE INDEX IF NOT EXISTS idx_check_results_lookup
+        ON check_results (check_id, created_at)
+    `),
+  ]);
+}
+
+/** Insert one check result row. */
+export async function insertCheckResult(
+  db: D1Database,
+  checkId: string,
+  status: string,
+  responseTimeMs: number,
+  error: string | null,
+): Promise<void> {
+  await db.prepare(
+    'INSERT INTO check_results (check_id, status, response_time_ms, error) VALUES (?, ?, ?, ?)',
+  ).bind(checkId, status, responseTimeMs, error).run();
+}
+
+/** Batch-load 24h history for all given check IDs in one query. */
+export async function loadHistory(
+  db: D1Database,
+  checkIds: string[],
+): Promise<Map<string, HistoryEntry[]>> {
+  const result = new Map<string, HistoryEntry[]>();
+  if (checkIds.length === 0) return result;
+
+  const placeholders = checkIds.map(() => '?').join(', ');
+  const rows = await db.prepare(`
+    SELECT check_id, created_at, status, response_time_ms, error
+    FROM check_results
+    WHERE check_id IN (${placeholders})
+      AND created_at >= datetime('now', '-24 hours')
+    ORDER BY created_at ASC
+  `).bind(...checkIds).all<{
+    check_id: string;
+    created_at: string;
+    status: string;
+    response_time_ms: number;
+    error: string | null;
+  }>();
+
+  for (const row of rows.results) {
+    const entries = result.get(row.check_id) ?? [];
+    entries.push({
+      timestamp: row.created_at,
+      status: row.status as HistoryEntry['status'],
+      responseTimeMs: row.response_time_ms,
+      error: row.error,
+    });
+    result.set(row.check_id, entries);
+  }
+
+  return result;
+}
+
+/** Delete rows older than 48h. */
+export async function pruneHistory(db: D1Database): Promise<void> {
+  await db.prepare(
+    "DELETE FROM check_results WHERE created_at < datetime('now', '-48 hours')",
+  ).run();
 }
