@@ -19,7 +19,8 @@
     "build:inline": "tsx scripts/inline-assets.ts",
     "build:server": "tsup",
     "build": "npm run build:dashboard && npm run build:inline && npm run build:server",
-    "test": "vitest run",
+    "typecheck:examples": "tsc -p examples/tsconfig.json",
+    "test": "vitest run && npm run typecheck:examples",
     "test:watch": "vitest",
     "lint": "oxlint src/",
     "prepublishOnly": "npm run build"
