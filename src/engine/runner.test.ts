@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { runCheck, resolveCheckUrl, evaluateAssertions } from './runner';
+import { runCheck, evaluateAssertions } from './runner';
 import type { CheckConfig, Assertion } from '../types';
 
 const mockFetch = vi.fn();
@@ -22,26 +22,44 @@ function mockResponse(opts: {
   };
 }
 
+/** Full CheckConfig with sensible defaults for tests */
+function makeCheck(overrides: Partial<CheckConfig> = {}): CheckConfig {
+  return {
+    id: 'test-check',
+    name: 'Test Check',
+    type: 'api',
+    url: 'https://example.com',
+    method: 'GET',
+    headers: {},
+    body: null,
+    assertions: [{ type: 'statusCode', operator: 'is', value: 200 }],
+    retry_count: 0,
+    retry_delay_ms: 300,
+    timeout_ms: 5000,
+    failure_threshold: 2,
+    tags: [],
+    group_id: null,
+    regions: ['default'],
+    enabled: true,
+    ...overrides,
+  };
+}
+
 describe('runner', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', mockFetch);
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    mockFetch.mockClear();
   });
 
-  const baseCheck: CheckConfig = {
-    id: 'test-check',
-    name: 'Test Check',
-    type: 'api',
-    url: 'https://example.com',
-  };
+  const baseCheck = makeCheck();
 
   it('returns success with default assertion (status 200)', async () => {
     mockFetch.mockResolvedValue(mockResponse({ status: 200 }));
 
-    const result = await runCheck(baseCheck, undefined, 5000, 'clawdwatch/1.0');
+    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
 
     expect(result.success).toBe(true);
     expect(result.statusCode).toBe(200);
@@ -51,7 +69,7 @@ describe('runner', () => {
   it('returns failure when default assertion fails', async () => {
     mockFetch.mockResolvedValue(mockResponse({ status: 503 }));
 
-    const result = await runCheck(baseCheck, undefined, 5000, 'clawdwatch/1.0');
+    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
 
     expect(result.success).toBe(false);
     expect(result.statusCode).toBe(503);
@@ -60,9 +78,9 @@ describe('runner', () => {
 
   it('uses configured method', async () => {
     mockFetch.mockResolvedValue(mockResponse());
-    const check: CheckConfig = { ...baseCheck, method: 'POST' };
+    const check = makeCheck({ method: 'POST' });
 
-    await runCheck(check, undefined, 5000, 'clawdwatch/1.0');
+    await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
 
     expect(mockFetch).toHaveBeenCalledWith(
       'https://example.com',
@@ -73,7 +91,7 @@ describe('runner', () => {
   it('defaults method to GET', async () => {
     mockFetch.mockResolvedValue(mockResponse());
 
-    await runCheck(baseCheck, undefined, 5000, 'clawdwatch/1.0');
+    await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
 
     expect(mockFetch).toHaveBeenCalledWith(
       'https://example.com',
@@ -83,12 +101,11 @@ describe('runner', () => {
 
   it('uses custom assertions instead of default', async () => {
     mockFetch.mockResolvedValue(mockResponse({ status: 201 }));
-    const check: CheckConfig = {
-      ...baseCheck,
+    const check = makeCheck({
       assertions: [{ type: 'statusCode', operator: 'is', value: 201 }],
-    };
+    });
 
-    const result = await runCheck(check, undefined, 5000, 'clawdwatch/1.0');
+    const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
     expect(result.success).toBe(true);
   });
 
@@ -97,15 +114,14 @@ describe('runner', () => {
       status: 503,
       headers: { 'content-type': 'application/json' },
     }));
-    const check: CheckConfig = {
-      ...baseCheck,
+    const check = makeCheck({
       assertions: [
         { type: 'statusCode', operator: 'is', value: 200 },
         { type: 'header', name: 'content-type', operator: 'is', value: 'text/html' },
       ],
-    };
+    });
 
-    const result = await runCheck(check, undefined, 5000, 'clawdwatch/1.0');
+    const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
     expect(result.success).toBe(false);
     expect(result.error).toContain('Expected status 200, got 503');
     expect(result.error).toContain('Header "content-type"');
@@ -114,7 +130,7 @@ describe('runner', () => {
   it('handles fetch errors', async () => {
     mockFetch.mockRejectedValue(new Error('DNS resolution failed'));
 
-    const result = await runCheck(baseCheck, undefined, 5000, 'clawdwatch/1.0');
+    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
 
     expect(result.success).toBe(false);
     expect(result.statusCode).toBeNull();
@@ -124,39 +140,59 @@ describe('runner', () => {
   it('handles abort/timeout errors', async () => {
     mockFetch.mockRejectedValue(new Error('The operation was aborted'));
 
-    const result = await runCheck(baseCheck, undefined, 5000, 'clawdwatch/1.0');
+    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
 
     expect(result.success).toBe(false);
     expect(result.error).toBe('Timeout after 5000ms');
   });
 
-  it('resolves {{WORKER_URL}} placeholder', async () => {
+  it('passes user-agent and custom headers', async () => {
     mockFetch.mockResolvedValue(mockResponse());
-    const check: CheckConfig = { ...baseCheck, url: '{{WORKER_URL}}/health' };
+    const check = makeCheck({
+      headers: { 'Accept': 'application/json' },
+    });
 
-    await runCheck(check, 'https://worker.example.com', 5000, 'clawdwatch/1.0');
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://worker.example.com/health',
-      expect.objectContaining({ method: 'GET' }),
-    );
-  });
-
-  it('passes user-agent header and abort signal', async () => {
-    mockFetch.mockResolvedValue(mockResponse());
-
-    await runCheck(baseCheck, undefined, 5000, 'my-app/1.0');
+    await runCheck(check, 'https://example.com', 'my-app/1.0');
 
     expect(mockFetch).toHaveBeenCalledWith(
       'https://example.com',
       expect.objectContaining({
         method: 'GET',
         redirect: 'follow',
-        headers: { 'User-Agent': 'my-app/1.0' },
+        headers: { 'User-Agent': 'my-app/1.0', 'Accept': 'application/json' },
       }),
     );
     const callArgs = mockFetch.mock.calls[0][1];
     expect(callArgs.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('sends body for POST requests', async () => {
+    mockFetch.mockResolvedValue(mockResponse());
+    const check = makeCheck({
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{"test": true}',
+    });
+
+    await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      'https://example.com',
+      expect.objectContaining({
+        method: 'POST',
+        body: '{"test": true}',
+      }),
+    );
+  });
+
+  it('does not send body for GET requests', async () => {
+    mockFetch.mockResolvedValue(mockResponse());
+    const check = makeCheck({ body: 'should-be-ignored' });
+
+    await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
+
+    const callArgs = mockFetch.mock.calls[0][1];
+    expect(callArgs.body).toBeUndefined();
   });
 
   describe('retry', () => {
@@ -166,8 +202,8 @@ describe('runner', () => {
         .mockResolvedValueOnce(mockResponse({ status: 503 }))
         .mockResolvedValueOnce(mockResponse({ status: 200 }));
 
-      const check: CheckConfig = { ...baseCheck, retry: { count: 2, delayMs: 0 } };
-      const result = await runCheck(check, undefined, 5000, 'clawdwatch/1.0');
+      const check = makeCheck({ retry_count: 2, retry_delay_ms: 0 });
+      const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
 
       expect(result.success).toBe(true);
       expect(mockFetch).toHaveBeenCalledTimes(3);
@@ -176,8 +212,8 @@ describe('runner', () => {
     it('does not retry on success', async () => {
       mockFetch.mockResolvedValue(mockResponse({ status: 200 }));
 
-      const check: CheckConfig = { ...baseCheck, retry: { count: 3, delayMs: 0 } };
-      const result = await runCheck(check, undefined, 5000, 'clawdwatch/1.0');
+      const check = makeCheck({ retry_count: 3, retry_delay_ms: 0 });
+      const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
 
       expect(result.success).toBe(true);
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -186,8 +222,8 @@ describe('runner', () => {
     it('returns last failure when all retries exhausted', async () => {
       mockFetch.mockResolvedValue(mockResponse({ status: 503 }));
 
-      const check: CheckConfig = { ...baseCheck, retry: { count: 1, delayMs: 0 } };
-      const result = await runCheck(check, undefined, 5000, 'clawdwatch/1.0');
+      const check = makeCheck({ retry_count: 1, retry_delay_ms: 0 });
+      const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
 
       expect(result.success).toBe(false);
       expect(mockFetch).toHaveBeenCalledTimes(2); // initial + 1 retry
@@ -196,7 +232,7 @@ describe('runner', () => {
     it('does not retry by default', async () => {
       mockFetch.mockResolvedValue(mockResponse({ status: 503 }));
 
-      const result = await runCheck(baseCheck, undefined, 5000, 'clawdwatch/1.0');
+      const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
 
       expect(result.success).toBe(false);
       expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -334,29 +370,5 @@ describe('evaluateAssertions', () => {
       const failures = evaluateAssertions(assertions, response, 500, null);
       expect(failures).toHaveLength(2);
     });
-  });
-});
-
-describe('resolveCheckUrl', () => {
-  it('replaces {{WORKER_URL}} with provided URL', () => {
-    expect(resolveCheckUrl('{{WORKER_URL}}/health', 'https://example.com')).toBe(
-      'https://example.com/health',
-    );
-  });
-
-  it('strips trailing slashes from worker URL', () => {
-    expect(resolveCheckUrl('{{WORKER_URL}}/health', 'https://example.com/')).toBe(
-      'https://example.com/health',
-    );
-  });
-
-  it('falls back to localhost when no worker URL provided', () => {
-    expect(resolveCheckUrl('{{WORKER_URL}}/health', undefined)).toBe(
-      'http://localhost:8787/health',
-    );
-  });
-
-  it('returns URL unchanged when no placeholder', () => {
-    expect(resolveCheckUrl('https://example.com', undefined)).toBe('https://example.com');
   });
 });

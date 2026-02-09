@@ -21,7 +21,7 @@ describe('computeTransition', () => {
   };
 
   it('unknown → healthy on first success (no alert)', () => {
-    const state = createEmptyCheckState('test');
+    const state = createEmptyCheckState();
     const { newState, alertType } = computeTransition(state, successResult, 2);
 
     expect(newState.status).toBe('healthy');
@@ -30,7 +30,7 @@ describe('computeTransition', () => {
   });
 
   it('unknown → degraded on first failure (no alert, threshold=2)', () => {
-    const state = createEmptyCheckState('test');
+    const state = createEmptyCheckState();
     const { newState, alertType } = computeTransition(state, failureResult, 2);
 
     expect(newState.status).toBe('degraded');
@@ -39,7 +39,7 @@ describe('computeTransition', () => {
   });
 
   it('degraded → unhealthy when threshold met (failure alert)', () => {
-    const state = { ...createEmptyCheckState('test'), status: 'degraded' as const, consecutiveFailures: 1 };
+    const state = { ...createEmptyCheckState(), status: 'degraded' as const, consecutiveFailures: 1 };
     const { newState, alertType } = computeTransition(state, failureResult, 2);
 
     expect(newState.status).toBe('unhealthy');
@@ -48,7 +48,7 @@ describe('computeTransition', () => {
   });
 
   it('unhealthy → unhealthy on continued failure (no alert)', () => {
-    const state = { ...createEmptyCheckState('test'), status: 'unhealthy' as const, consecutiveFailures: 5 };
+    const state = { ...createEmptyCheckState(), status: 'unhealthy' as const, consecutiveFailures: 5 };
     const { newState, alertType } = computeTransition(state, failureResult, 2);
 
     expect(newState.status).toBe('unhealthy');
@@ -57,7 +57,7 @@ describe('computeTransition', () => {
   });
 
   it('unhealthy → healthy on success (recovery alert)', () => {
-    const state = { ...createEmptyCheckState('test'), status: 'unhealthy' as const, consecutiveFailures: 3 };
+    const state = { ...createEmptyCheckState(), status: 'unhealthy' as const, consecutiveFailures: 3 };
     const { newState, alertType } = computeTransition(state, successResult, 2);
 
     expect(newState.status).toBe('healthy');
@@ -66,7 +66,7 @@ describe('computeTransition', () => {
   });
 
   it('healthy → degraded on first failure (no alert)', () => {
-    const state = { ...createEmptyCheckState('test'), status: 'healthy' as const };
+    const state = { ...createEmptyCheckState(), status: 'healthy' as const };
     const { newState, alertType } = computeTransition(state, failureResult, 2);
 
     expect(newState.status).toBe('degraded');
@@ -75,7 +75,7 @@ describe('computeTransition', () => {
   });
 
   it('healthy → healthy on success (no alert)', () => {
-    const state = { ...createEmptyCheckState('test'), status: 'healthy' as const };
+    const state = { ...createEmptyCheckState(), status: 'healthy' as const };
     const { newState, alertType } = computeTransition(state, successResult, 2);
 
     expect(newState.status).toBe('healthy');
@@ -83,7 +83,7 @@ describe('computeTransition', () => {
   });
 
   it('threshold=1 goes straight to unhealthy on first failure', () => {
-    const state = createEmptyCheckState('test');
+    const state = createEmptyCheckState();
     const { newState, alertType } = computeTransition(state, failureResult, 1);
 
     expect(newState.status).toBe('unhealthy');
@@ -93,7 +93,7 @@ describe('computeTransition', () => {
 
   it('clears lastError on recovery', () => {
     const state = {
-      ...createEmptyCheckState('test'),
+      ...createEmptyCheckState(),
       status: 'unhealthy' as const,
       consecutiveFailures: 2,
       lastError: 'previous error',
@@ -101,23 +101,5 @@ describe('computeTransition', () => {
     const { newState } = computeTransition(state, successResult, 2);
 
     expect(newState.lastError).toBeNull();
-  });
-
-  it('handles legacy state without history field', () => {
-    const legacyState = {
-      id: 'test',
-      status: 'healthy' as const,
-      consecutiveFailures: 0,
-      lastCheck: '2026-01-01T00:00:00Z',
-      lastSuccess: '2026-01-01T00:00:00Z',
-      lastError: null,
-      responseTimeMs: 100,
-    };
-
-    // @ts-expect-error -- simulating legacy state without history
-    const { newState } = computeTransition(legacyState, successResult, 2);
-
-    expect(newState.history).toEqual([]);
-    expect(newState.status).toBe('healthy');
   });
 });

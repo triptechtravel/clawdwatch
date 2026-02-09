@@ -1,6 +1,9 @@
 /**
  * Check runner — executes monitoring checks via fetch()
  * with assertion evaluation and retry support.
+ *
+ * v2: URL is pre-resolved by the orchestrator. Timeout, retry,
+ * headers, and body all come from the CheckConfig (loaded from D1).
  */
 
 import type { CheckConfig, CheckResult, Assertion } from '../types';
@@ -8,33 +11,19 @@ import type { CheckConfig, CheckResult, Assertion } from '../types';
 const MAX_BODY_SIZE = 64 * 1024; // 64KB max for body assertions
 
 /**
- * Resolve {{WORKER_URL}} placeholders in check URLs
- */
-export function resolveCheckUrl(url: string, workerUrl: string | undefined): string {
-  if (!workerUrl) {
-    return url.replace('{{WORKER_URL}}', 'http://localhost:8787');
-  }
-  return url.replace('{{WORKER_URL}}', workerUrl.replace(/\/+$/, ''));
-}
-
-/**
  * Run a single check with retry support.
  * Retries only happen on failure — a passing check returns immediately.
  */
 export async function runCheck(
   check: CheckConfig,
-  workerUrl: string | undefined,
-  timeoutMs: number,
+  resolvedUrl: string,
   userAgent: string,
 ): Promise<CheckResult> {
-  const retryCount = check.retry?.count ?? 0;
-  const retryDelay = check.retry?.delayMs ?? 300;
+  let result = await executeCheck(check, resolvedUrl, userAgent);
 
-  let result = await executeCheck(check, workerUrl, timeoutMs, userAgent);
-
-  for (let attempt = 0; attempt < retryCount && !result.success; attempt++) {
-    await sleep(retryDelay);
-    result = await executeCheck(check, workerUrl, timeoutMs, userAgent);
+  for (let attempt = 0; attempt < check.retry_count && !result.success; attempt++) {
+    await sleep(check.retry_delay_ms);
+    result = await executeCheck(check, resolvedUrl, userAgent);
   }
 
   return result;
@@ -42,36 +31,46 @@ export async function runCheck(
 
 async function executeCheck(
   check: CheckConfig,
-  workerUrl: string | undefined,
-  timeoutMs: number,
+  resolvedUrl: string,
   userAgent: string,
 ): Promise<CheckResult> {
-  const url = resolveCheckUrl(check.url, workerUrl);
-  const method = (check.method ?? 'GET').toUpperCase();
+  const method = check.method.toUpperCase();
   const start = Date.now();
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), check.timeout_ms);
 
-    const response = await fetch(url, {
+    const headers: Record<string, string> = {
+      'User-Agent': userAgent,
+      ...check.headers,
+    };
+
+    const fetchOptions: RequestInit = {
       method,
       signal: controller.signal,
       redirect: 'follow',
-      headers: { 'User-Agent': userAgent },
-    });
+      headers,
+    };
 
+    if (check.body && method !== 'GET' && method !== 'HEAD') {
+      fetchOptions.body = check.body;
+    }
+
+    const response = await fetch(resolvedUrl, fetchOptions);
     clearTimeout(timer);
     const responseTimeMs = Date.now() - start;
 
     // Read body only if needed for assertions
-    const needsBody = check.assertions?.some((a) => a.type === 'body');
+    const needsBody = check.assertions.some((a) => a.type === 'body');
     let body: string | null = null;
     if (needsBody) {
       body = await readBodyCapped(response);
     }
 
-    const assertions = check.assertions ?? [{ type: 'statusCode' as const, operator: 'is' as const, value: 200 }];
+    const assertions = check.assertions.length > 0
+      ? check.assertions
+      : [{ type: 'statusCode' as const, operator: 'is' as const, value: 200 }];
     const failures = evaluateAssertions(assertions, response, responseTimeMs, body);
 
     return {
@@ -91,7 +90,7 @@ async function executeCheck(
       success: false,
       statusCode: null,
       responseTimeMs,
-      error: isTimeout ? `Timeout after ${timeoutMs}ms` : message,
+      error: isTimeout ? `Timeout after ${check.timeout_ms}ms` : message,
     };
   }
 }

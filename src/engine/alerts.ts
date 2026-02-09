@@ -1,6 +1,5 @@
 /**
- * State machine for alert transitions.
- * Determines when to fire alerts based on check results.
+ * State machine for alert transitions (v2 — no history in state)
  */
 
 import type {
@@ -28,7 +27,6 @@ export function computeTransition(
   const now = new Date().toISOString();
   const updated: CheckState = {
     ...state,
-    history: state.history ?? [],
     lastCheck: now,
     responseTimeMs: result.responseTimeMs,
   };

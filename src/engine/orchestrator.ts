@@ -1,65 +1,109 @@
 /**
- * Monitoring orchestrator
+ * Monitoring orchestrator (v2)
  *
- * Runs all configured checks, updates state, and fires alert callbacks.
+ * - Loads checks from D1 (not static config)
+ * - Writes results to Analytics Engine
+ * - Creates/resolves incidents in D1
+ * - Checks maintenance windows before alerting
+ * - Simplified R2 state (no history)
  */
 
 import type {
   CheckConfig,
+  CheckState,
   AlertPayload,
+  ClawdWatchOptions,
 } from '../types';
 import { loadState, saveState, createEmptyCheckState } from './state';
+import { loadChecks } from './db';
+import { isInMaintenance, createIncident, resolveIncidents, loadAlertRules } from './db';
 import { runCheck } from './runner';
 import { computeTransition } from './alerts';
 
-export interface OrchestratorConfig {
-  checks: CheckConfig[];
-  defaultFailureThreshold: number;
-  defaultTimeoutMs: number;
-  historySize: number;
+interface OrchestratorDefaults {
+  failureThreshold: number;
+  timeoutMs: number;
   stateKey: string;
   userAgent: string;
 }
 
 export async function runMonitoringChecks<TEnv>(
-  config: OrchestratorConfig,
-  bucket: R2Bucket,
-  workerUrl: string | undefined,
-  onAlert: ((alert: AlertPayload, env: TEnv) => Promise<void>) | undefined,
+  options: ClawdWatchOptions<TEnv>,
+  defaults: OrchestratorDefaults,
   env: TEnv,
 ): Promise<void> {
-  console.log(`[clawdwatch] Running ${config.checks.length} check(s)...`);
+  const db = options.storage.getD1(env);
+  const bucket = options.storage.getR2(env);
+  const ae = options.storage.getAnalyticsEngine?.(env);
 
-  const state = await loadState(bucket, config.stateKey);
+  if (!bucket) {
+    console.warn('[clawdwatch] R2 bucket not available, skipping checks');
+    return;
+  }
 
-  for (const check of config.checks) {
-    const timeoutMs = check.timeoutMs ?? config.defaultTimeoutMs;
-    const threshold = check.failureThreshold ?? config.defaultFailureThreshold;
+  // Load enabled checks from D1
+  const checks = await loadChecks(db);
+  console.log(`[clawdwatch] Running ${checks.length} check(s)...`);
 
-    const checkState = state.checks[check.id] ?? createEmptyCheckState(check.id);
-    // eslint-disable-next-line no-await-in-loop -- sequential check execution required
-    const result = await runCheck(check, workerUrl, timeoutMs, config.userAgent);
+  const state = await loadState(bucket, defaults.stateKey);
+
+  for (const check of checks) {
+    // Check maintenance window
+    // eslint-disable-next-line no-await-in-loop
+    const maintenance = await isInMaintenance(db, check.id, check.group_id);
+    if (maintenance?.skip_checks) {
+      console.log(`[clawdwatch] ${check.name}: skipped (maintenance window)`);
+      continue;
+    }
+
+    const checkState = state.checks[check.id] ?? createEmptyCheckState();
+    const resolvedUrl = options.resolveUrl?.(check.url, env) ?? check.url;
+
+    // Execute check
+    // eslint-disable-next-line no-await-in-loop
+    const result = await runCheck(check, resolvedUrl, defaults.userAgent);
 
     console.log(
       `[clawdwatch] ${check.name}: ${result.success ? 'OK' : 'FAIL'} (${result.responseTimeMs}ms)${result.error ? ` — ${result.error}` : ''}`,
     );
 
-    const { newState, alertType } = computeTransition(checkState, result, threshold);
-
-    // Record history entry
-    newState.history.push({
-      timestamp: new Date().toISOString(),
-      status: newState.status,
-      responseTimeMs: result.responseTimeMs,
-      error: result.error,
-    });
-    if (newState.history.length > config.historySize) {
-      newState.history = newState.history.slice(-config.historySize);
+    // Write to Analytics Engine
+    if (ae) {
+      ae.writeDataPoint({
+        indexes: [check.id],
+        blobs: [
+          check.name,
+          result.success ? 'healthy' : 'unhealthy',
+          result.error ?? '',
+          'default',
+          check.type,
+        ],
+        doubles: [
+          result.responseTimeMs,
+          result.statusCode ?? 0,
+        ],
+      });
     }
 
+    // Compute state transition
+    const { newState, alertType } = computeTransition(checkState, result, check.failure_threshold);
     state.checks[check.id] = newState;
 
-    if (alertType && onAlert) {
+    // Track incidents in D1
+    if (alertType === 'failure') {
+      // eslint-disable-next-line no-await-in-loop
+      await createIncident(db, check.id, 'unhealthy', result.error).catch((err) => {
+        console.error(`[clawdwatch] Failed to create incident for ${check.name}:`, err);
+      });
+    } else if (alertType === 'recovery') {
+      // eslint-disable-next-line no-await-in-loop
+      await resolveIncidents(db, check.id).catch((err) => {
+        console.error(`[clawdwatch] Failed to resolve incidents for ${check.name}:`, err);
+      });
+    }
+
+    // Fire alerts (unless in maintenance with suppress_alerts)
+    if (alertType && options.onAlert && !maintenance?.suppress_alerts) {
       console.log(`[clawdwatch] Firing ${alertType} alert for ${check.name}`);
       try {
         const payload: AlertPayload = {
@@ -69,8 +113,8 @@ export async function runMonitoringChecks<TEnv>(
           result,
           timestamp: new Date().toISOString(),
         };
-        // eslint-disable-next-line no-await-in-loop -- sequential alert dispatch
-        await onAlert(payload, env);
+        // eslint-disable-next-line no-await-in-loop
+        await options.onAlert(payload, env);
       } catch (err) {
         console.error(`[clawdwatch] Alert callback failed for ${check.name}:`, err);
       }
@@ -78,7 +122,7 @@ export async function runMonitoringChecks<TEnv>(
   }
 
   state.lastRun = new Date().toISOString();
-  await saveState(bucket, config.stateKey, state);
+  await saveState(bucket, defaults.stateKey, state);
 
   console.log('[clawdwatch] Checks complete, state saved');
 }

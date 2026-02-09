@@ -27,17 +27,15 @@ describe('state', () => {
   });
 
   describe('createEmptyCheckState', () => {
-    it('returns unknown check state with the given id', () => {
-      const check = createEmptyCheckState('test-check');
+    it('returns unknown check state', () => {
+      const check = createEmptyCheckState();
       expect(check).toEqual({
-        id: 'test-check',
         status: 'unknown',
         consecutiveFailures: 0,
         lastCheck: null,
         lastSuccess: null,
         lastError: null,
         responseTimeMs: null,
-        history: [],
       });
     });
   });
@@ -57,7 +55,6 @@ describe('state', () => {
       const existingState = {
         checks: {
           'test-check': {
-            id: 'test-check',
             status: 'healthy',
             consecutiveFailures: 0,
             lastCheck: '2025-01-01T00:00:00Z',
@@ -74,6 +71,39 @@ describe('state', () => {
 
       const state = await loadState(bucket, 'clawdwatch/state.json');
       expect(state).toEqual(existingState);
+    });
+
+    it('migrates v1 state by stripping history arrays', async () => {
+      const bucket = createMockBucket();
+      const v1State = {
+        checks: {
+          'test-check': {
+            id: 'test-check',
+            status: 'healthy',
+            consecutiveFailures: 0,
+            lastCheck: '2025-01-01T00:00:00Z',
+            lastSuccess: '2025-01-01T00:00:00Z',
+            lastError: null,
+            responseTimeMs: 150,
+            history: [{ timestamp: '2025-01-01', status: 'healthy', responseTimeMs: 150, error: null }],
+          },
+        },
+        lastRun: '2025-01-01T00:00:00Z',
+      };
+      (bucket.get as ReturnType<typeof vi.fn>).mockResolvedValue({
+        text: () => Promise.resolve(JSON.stringify(v1State)),
+      });
+
+      const state = await loadState(bucket, 'clawdwatch/state.json');
+      // Should strip history and id, keep only v2 fields
+      expect(state.checks['test-check']).toEqual({
+        status: 'healthy',
+        consecutiveFailures: 0,
+        lastCheck: '2025-01-01T00:00:00Z',
+        lastSuccess: '2025-01-01T00:00:00Z',
+        lastError: null,
+        responseTimeMs: 150,
+      });
     });
 
     it('returns empty state on parse error', async () => {
@@ -108,7 +138,7 @@ describe('state', () => {
       const bucket = createMockBucket();
       const state = {
         checks: {
-          'test-check': createEmptyCheckState('test-check'),
+          'test-check': createEmptyCheckState(),
         },
         lastRun: '2025-01-01T00:00:00Z',
       };
