@@ -23,6 +23,9 @@
     "test": "vitest run && npm run typecheck:examples",
     "test:watch": "vitest",
     "lint": "oxlint src/",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -55,6 +58,7 @@
     "tsx": "^4.19.0",
     "typescript": "^5.7.0",
     "vite": "^6.1.0",
+    "vitepress": "^1.6.4",
     "vitest": "^4.0.0"
   }
 }
