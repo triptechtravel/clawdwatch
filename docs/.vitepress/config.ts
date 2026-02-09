@@ -9,6 +9,7 @@ export default defineConfig({
     ["link", { rel: "icon", href: "https://openclaw.ai/favicon.svg" }],
   ],
   themeConfig: {
+    logo: "https://openclaw.ai/favicon.svg",
     nav: [
       { text: "Guide", link: "/guide/getting-started" },
       { text: "Integration", link: "/integration/agent-setup" },
