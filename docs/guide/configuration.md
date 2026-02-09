@@ -59,6 +59,17 @@ Assertions let you validate more than just the HTTP status code.
 { type: 'body', operator: 'contains', value: '"status":"ok"' }
 ```
 
+### JSON Path
+
+```typescript
+{ type: 'jsonPath', path: '$.data.token', operator: 'isNot', value: '' }
+{ type: 'jsonPath', path: '$.items[0].id', operator: 'is', value: 'expected' }
+```
+
+Operators: `is`, `isNot`, `contains`, `notContains`, `matches` (regex).
+Path syntax: `$.field`, `$.nested.field`, `$.array[0].field`.
+Non-string values are stringified. Missing paths fail the assertion.
+
 ### Response Time
 
 ```typescript

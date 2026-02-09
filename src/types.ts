@@ -41,11 +41,19 @@ export interface ResponseTimeAssertion {
   value: number;
 }
 
+export interface JsonPathAssertion {
+  type: 'jsonPath';
+  path: string;
+  operator: 'is' | 'isNot' | 'contains' | 'notContains' | 'matches';
+  value: string;
+}
+
 export type Assertion =
   | StatusCodeAssertion
   | HeaderAssertion
   | BodyAssertion
-  | ResponseTimeAssertion;
+  | ResponseTimeAssertion
+  | JsonPathAssertion;
 
 // ── Check Config (matches D1 schema) ──
 

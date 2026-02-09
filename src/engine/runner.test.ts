@@ -195,6 +195,22 @@ describe('runner', () => {
     expect(callArgs.body).toBeUndefined();
   });
 
+  it('reads body when jsonPath assertion is present', async () => {
+    mockFetch.mockResolvedValue(mockResponse({
+      status: 200,
+      body: '{"status":"ok","token":"abc"}',
+    }));
+    const check = makeCheck({
+      assertions: [
+        { type: 'jsonPath', path: '$.token', operator: 'is', value: 'abc' },
+      ],
+    });
+
+    const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
+    expect(result.success).toBe(true);
+    expect(result.error).toBeNull();
+  });
+
   describe('retry', () => {
     it('retries on failure up to configured count', async () => {
       mockFetch
@@ -347,6 +363,127 @@ describe('evaluateAssertions', () => {
     it('fails when exactly at threshold', () => {
       const assertions: Assertion[] = [{ type: 'responseTime', operator: 'lessThan', value: 500 }];
       expect(evaluateAssertions(assertions, fakeResponse(), 500, null)).toHaveLength(1);
+    });
+  });
+
+  describe('jsonPath', () => {
+    const jsonBody = JSON.stringify({
+      data: { token: 'abc123', count: 42 },
+      items: [{ id: 'first' }, { id: 'second' }],
+      nested: { deep: { value: 'found' } },
+      empty: '',
+    });
+
+    it('resolves top-level field', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.empty', operator: 'is', value: '' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('resolves nested field', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.data.token', operator: 'is', value: 'abc123' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('resolves deeply nested field', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.nested.deep.value', operator: 'is', value: 'found' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('resolves array index', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.items[0].id', operator: 'is', value: 'first' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('resolves second array element', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.items[1].id', operator: 'is', value: 'second' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('supports isNot operator', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.data.token', operator: 'isNot', value: '' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('supports contains operator', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.data.token', operator: 'contains', value: 'abc' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('supports notContains operator', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.data.token', operator: 'notContains', value: 'xyz' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('supports matches operator (regex)', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.data.token', operator: 'matches', value: '^abc\\d+$' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('stringifies numeric values for comparison', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.data.count', operator: 'is', value: '42' },
+      ];
+      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
+    });
+
+    it('fails when path is missing', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.nonexistent', operator: 'is', value: 'anything' },
+      ];
+      const failures = evaluateAssertions(assertions, fakeResponse(), 100, jsonBody);
+      expect(failures).toEqual(['jsonPath "$.nonexistent": path not found']);
+    });
+
+    it('fails when body is not valid JSON', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.foo', operator: 'is', value: 'bar' },
+      ];
+      const failures = evaluateAssertions(assertions, fakeResponse(), 100, 'not json');
+      expect(failures).toEqual(['jsonPath "$.foo": body is not valid JSON']);
+    });
+
+    it('fails when body is null', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.foo', operator: 'is', value: 'bar' },
+      ];
+      const failures = evaluateAssertions(assertions, fakeResponse(), 100, null);
+      expect(failures).toEqual(['jsonPath assertion requires response body but body was not read']);
+    });
+
+    it('fails when array index is out of bounds', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.items[99]', operator: 'is', value: 'anything' },
+      ];
+      const failures = evaluateAssertions(assertions, fakeResponse(), 100, jsonBody);
+      expect(failures).toEqual(['jsonPath "$.items[99]": path not found']);
+    });
+
+    it('fails when operator check fails', () => {
+      const assertions: Assertion[] = [
+        { type: 'jsonPath', path: '$.data.token', operator: 'is', value: 'wrong' },
+      ];
+      const failures = evaluateAssertions(assertions, fakeResponse(), 100, jsonBody);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]).toContain('jsonPath "$.data.token"');
+      expect(failures[0]).toContain('expected "wrong"');
     });
   });
 

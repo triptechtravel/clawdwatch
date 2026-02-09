@@ -62,7 +62,7 @@ async function executeCheck(
     const responseTimeMs = Date.now() - start;
 
     // Read body only if needed for assertions
-    const needsBody = check.assertions.some((a) => a.type === 'body');
+    const needsBody = check.assertions.some((a) => a.type === 'body' || a.type === 'jsonPath');
     let body: string | null = null;
     if (needsBody) {
       body = await readBodyCapped(response);
@@ -145,6 +145,31 @@ export function evaluateAssertions(
         }
         break;
       }
+
+      case 'jsonPath': {
+        if (body === null) {
+          failures.push('jsonPath assertion requires response body but body was not read');
+          break;
+        }
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(body);
+        } catch {
+          failures.push(`jsonPath "${assertion.path}": body is not valid JSON`);
+          break;
+        }
+        const extracted = resolveJsonPath(parsed, assertion.path);
+        if (extracted === undefined) {
+          failures.push(`jsonPath "${assertion.path}": path not found`);
+          break;
+        }
+        const actual = typeof extracted === 'string' ? extracted : JSON.stringify(extracted);
+        const failed = evaluateStringAssertion(assertion.operator, actual, assertion.value, false);
+        if (failed) {
+          failures.push(`jsonPath "${assertion.path}": ${failed}`);
+        }
+        break;
+      }
     }
   }
 
@@ -177,6 +202,37 @@ function evaluateStringAssertion(
     }
   }
   return null;
+}
+
+/**
+ * Resolve a simple JSON path ($.foo.bar, $.items[0].id) against an object.
+ * Returns undefined for missing paths. No wildcards or recursive descent.
+ */
+function resolveJsonPath(obj: unknown, path: string): unknown {
+  if (!path.startsWith('$')) return undefined;
+  const rest = path.slice(1); // strip leading $
+  if (rest === '' || rest === '.') return obj;
+
+  // Split into segments: .foo, [0], .bar
+  const segments = rest.match(/\.([^.[]+)|\[(\d+)]/g);
+  if (!segments) return undefined;
+
+  let current: unknown = obj;
+  for (const seg of segments) {
+    if (current === null || current === undefined) return undefined;
+    if (seg.startsWith('[')) {
+      const index = parseInt(seg.slice(1, -1), 10);
+      if (!Array.isArray(current)) return undefined;
+      if (index < 0 || index >= current.length) return undefined;
+      current = current[index];
+    } else {
+      // .fieldName
+      const key = seg.slice(1);
+      if (typeof current !== 'object') return undefined;
+      current = (current as Record<string, unknown>)[key];
+    }
+  }
+  return current;
 }
 
 async function readBodyCapped(response: Response): Promise<string> {
