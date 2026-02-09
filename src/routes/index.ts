@@ -24,6 +24,11 @@ import {
   toggleCheck,
   listIncidents,
   loadAllAlertRules,
+  createAlertRule,
+  deleteAlertRule,
+  listMaintenanceWindows,
+  createMaintenanceWindow,
+  deleteMaintenanceWindow,
 } from '../engine/db';
 import { runCheck } from '../engine/runner';
 
@@ -195,6 +200,86 @@ export function createRoutes(config: RouteConfig): Hono {
       const db = config.getD1(c);
       const rules = await loadAllAlertRules(db);
       return c.json({ alertRules: rules });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
+    }
+  });
+
+  app.post('/api/alert-rules', async (c) => {
+    try {
+      const db = config.getD1(c);
+      const body = await c.req.json<{
+        channel: string;
+        check_id?: string | null;
+        group_id?: string | null;
+        config?: Record<string, unknown>;
+        on_failure?: boolean;
+        on_recovery?: boolean;
+        enabled?: boolean;
+      }>();
+      if (!body.channel) {
+        return c.json({ error: 'channel is required' }, 400);
+      }
+      const id = await createAlertRule(db, body);
+      return c.json({ ok: true, id }, 201);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
+    }
+  });
+
+  app.delete('/api/alert-rules/:id', async (c) => {
+    try {
+      const db = config.getD1(c);
+      const id = Number(c.req.param('id'));
+      const deleted = await deleteAlertRule(db, id);
+      if (!deleted) return c.json({ error: 'Alert rule not found' }, 404);
+      return c.json({ ok: true });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
+    }
+  });
+
+  // ── Maintenance Windows ──
+
+  app.get('/api/maintenance', async (c) => {
+    try {
+      const db = config.getD1(c);
+      const windows = await listMaintenanceWindows(db);
+      return c.json({ maintenanceWindows: windows });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
+    }
+  });
+
+  app.post('/api/maintenance', async (c) => {
+    try {
+      const db = config.getD1(c);
+      const body = await c.req.json<{
+        starts_at: string;
+        ends_at: string;
+        check_id?: string | null;
+        group_id?: string | null;
+        reason?: string | null;
+        suppress_alerts?: boolean;
+        skip_checks?: boolean;
+      }>();
+      if (!body.starts_at || !body.ends_at) {
+        return c.json({ error: 'starts_at and ends_at are required' }, 400);
+      }
+      const id = await createMaintenanceWindow(db, body);
+      return c.json({ ok: true, id }, 201);
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
+    }
+  });
+
+  app.delete('/api/maintenance/:id', async (c) => {
+    try {
+      const db = config.getD1(c);
+      const id = Number(c.req.param('id'));
+      const deleted = await deleteMaintenanceWindow(db, id);
+      if (!deleted) return c.json({ error: 'Maintenance window not found' }, 404);
+      return c.json({ ok: true });
     } catch (err) {
       return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
     }

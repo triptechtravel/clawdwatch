@@ -195,13 +195,44 @@ export async function loadAlertRules(db: D1Database, checkId: string, groupId: s
 /** Load all alert rules */
 export async function loadAllAlertRules(db: D1Database): Promise<AlertRule[]> {
   const result = await db.prepare('SELECT * FROM alert_rules ORDER BY id').all<AlertRule>();
-  return result.results.map((row) => ({
+  return result.results.map(parseAlertRuleRow);
+}
+
+function parseAlertRuleRow(row: AlertRule): AlertRule {
+  return {
     ...row,
     config: JSON.parse(row.config as unknown as string),
     on_failure: Boolean(row.on_failure),
     on_recovery: Boolean(row.on_recovery),
     enabled: Boolean(row.enabled),
-  }));
+  };
+}
+
+/** Create an alert rule */
+export async function createAlertRule(
+  db: D1Database,
+  rule: { channel: string; check_id?: string | null; group_id?: string | null; config?: Record<string, unknown>; on_failure?: boolean; on_recovery?: boolean; enabled?: boolean },
+): Promise<number> {
+  const result = await db.prepare(`
+    INSERT INTO alert_rules (check_id, group_id, channel, config, on_failure, on_recovery, enabled)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    rule.check_id ?? null,
+    rule.group_id ?? null,
+    rule.channel,
+    JSON.stringify(rule.config ?? {}),
+    rule.on_failure === false ? 0 : 1,
+    rule.on_recovery === false ? 0 : 1,
+    rule.enabled === false ? 0 : 1,
+  ).run();
+
+  return result.meta.last_row_id;
+}
+
+/** Delete an alert rule */
+export async function deleteAlertRule(db: D1Database, id: number): Promise<boolean> {
+  const result = await db.prepare('DELETE FROM alert_rules WHERE id = ?').bind(id).run();
+  return result.meta.changes > 0;
 }
 
 // ── Maintenance Windows ──
@@ -217,4 +248,41 @@ export async function isInMaintenance(db: D1Database, checkId: string, groupId: 
   `).bind(checkId, groupId).first<MaintenanceWindow>();
 
   return result ?? null;
+}
+
+/** List maintenance windows */
+export async function listMaintenanceWindows(db: D1Database): Promise<MaintenanceWindow[]> {
+  const result = await db.prepare('SELECT * FROM maintenance_windows ORDER BY starts_at DESC').all<MaintenanceWindow>();
+  return result.results.map((row) => ({
+    ...row,
+    suppress_alerts: Boolean(row.suppress_alerts),
+    skip_checks: Boolean(row.skip_checks),
+  }));
+}
+
+/** Create a maintenance window */
+export async function createMaintenanceWindow(
+  db: D1Database,
+  window: { starts_at: string; ends_at: string; check_id?: string | null; group_id?: string | null; reason?: string | null; suppress_alerts?: boolean; skip_checks?: boolean },
+): Promise<number> {
+  const result = await db.prepare(`
+    INSERT INTO maintenance_windows (check_id, group_id, starts_at, ends_at, reason, suppress_alerts, skip_checks)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).bind(
+    window.check_id ?? null,
+    window.group_id ?? null,
+    window.starts_at,
+    window.ends_at,
+    window.reason ?? null,
+    window.suppress_alerts === false ? 0 : 1,
+    window.skip_checks ? 1 : 0,
+  ).run();
+
+  return result.meta.last_row_id;
+}
+
+/** Delete a maintenance window */
+export async function deleteMaintenanceWindow(db: D1Database, id: number): Promise<boolean> {
+  const result = await db.prepare('DELETE FROM maintenance_windows WHERE id = ?').bind(id).run();
+  return result.meta.changes > 0;
 }

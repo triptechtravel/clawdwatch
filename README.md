@@ -1,8 +1,8 @@
 # clawdwatch
 
-Synthetic monitoring for Cloudflare Workers — D1 config, Analytics Engine metrics, and a built-in dashboard.
+Synthetic monitoring for Cloudflare Workers — health checks, state machine alerts, and an embedded dashboard.
 
-ClawdWatch is responsible for **detecting problems**. Your agent (e.g. moltbot/openclaw) is responsible for **deciding what to do about them**. When a check transitions to unhealthy or recovers, clawdwatch fires an `onAlert` callback with the details. What happens next — which channels to notify, how to format the message, who to wake up — is entirely up to the agent.
+ClawdWatch is responsible for **detecting problems**. Your agent (e.g. [openclaw](https://github.com/triptechtravel/openclaw)) is responsible for **deciding what to do about them**. When a check transitions to unhealthy or recovers, clawdwatch fires an `onAlert` callback with the details. What happens next — which channels to notify, how to format the message, who to wake up — is entirely up to the agent.
 
 - **Dynamic check config** stored in D1 — add/edit/delete checks without redeploying
 - **Analytics Engine metrics** — 90-day retention, query any time range
@@ -146,6 +146,11 @@ interface CheckConfig {
 | POST | `/api/checks/:id/run` | Run check immediately |
 | GET | `/api/incidents` | List incidents (?check_id, ?status, ?limit) |
 | GET | `/api/alert-rules` | List alert rules |
+| POST | `/api/alert-rules` | Create alert rule |
+| DELETE | `/api/alert-rules/:id` | Delete alert rule |
+| GET | `/api/maintenance` | List maintenance windows |
+| POST | `/api/maintenance` | Create maintenance window |
+| DELETE | `/api/maintenance/:id` | Delete maintenance window |
 | GET | `/api/config` | Export full config (checks + alert rules) |
 | PUT | `/api/config` | Import checks (declarative sync) |
 

@@ -1,6 +1,6 @@
 # Agent Skill Example
 
-This is a template for an AI agent skill (e.g. openclaw/moltbot) that manages
+This is a template for an AI agent skill (e.g. [openclaw](https://github.com/triptechtravel/openclaw)) that manages
 monitoring via the clawdwatch API. Copy and adapt for your agent.
 
 The key pattern: the agent runs inside a container and calls the worker's
@@ -51,6 +51,11 @@ curl -s -X POST "${BASE}/checks/my-check/run${SECRET}" | jq
 | POST | `/api/checks/:id/toggle` | Enable/disable check |
 | POST | `/api/checks/:id/run` | Run check immediately |
 | GET | `/api/incidents` | List incidents (?check_id, ?status, ?limit) |
-| GET | `/api/alert-rules` | List alert rules (read-only) |
+| GET | `/api/alert-rules` | List alert rules |
+| POST | `/api/alert-rules` | Create alert rule (requires channel) |
+| DELETE | `/api/alert-rules/:id` | Delete alert rule |
+| GET | `/api/maintenance` | List maintenance windows |
+| POST | `/api/maintenance` | Create maintenance window (requires starts_at, ends_at) |
+| DELETE | `/api/maintenance/:id` | Delete maintenance window |
 | GET | `/api/config` | Export full config |
 | PUT | `/api/config` | Import checks (declarative sync) |
