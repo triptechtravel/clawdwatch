@@ -2,12 +2,12 @@
 
 Synthetic monitoring for Cloudflare Workers — checks, state machine, and a built-in dashboard.
 
-ClawdWatch is responsible for **detecting problems**. Your system is responsible for **deciding what to do about them**. When a check transitions to unhealthy or recovers, clawdwatch fires an `onAlert` callback with the details. What happens next — which channels to notify, how to format the message, who to wake up — is entirely up to you.
+ClawdWatch is responsible for **detecting problems**. Your agent (e.g. moltbot/openclaw) is responsible for **deciding what to do about them**. When a check transitions to unhealthy or recovers, clawdwatch fires an `onAlert` callback with the details. What happens next — which channels to notify, how to format the message, who to wake up — is entirely up to the agent.
 
-- **HTTP health checks** with configurable thresholds and timeouts
+- **HTTP health checks** with custom assertions, retries, configurable thresholds
 - **Browser synthetic tests** (coming soon — Datadog-style real user monitoring)
 - **State machine** deduplication — no alert spam
-- **`onAlert` callback** — clawdwatch reports, you decide
+- **`onAlert` callback** — clawdwatch reports, your agent decides
 - **Embedded dashboard** — Datadog-style UI served from your worker
 - **R2 state persistence** — no external database needed
 
@@ -30,12 +30,23 @@ const monitor = createMonitor<Env>({
       type: 'api',
       url: 'https://example.com',
     },
+    {
+      id: 'worker-health',
+      name: 'Worker Health',
+      type: 'api',
+      url: '{{WORKER_URL}}/sandbox-health',
+      tags: ['infrastructure'],
+    },
   ],
   getR2Bucket: (env) => env.MY_BUCKET,
-  onAlert: async (alert) => {
-    // clawdwatch detected a problem — tell your system about it
-    // e.g. pass to openclaw, post to a webhook, log it, whatever
-    console.log(`${alert.type}: ${alert.check.name}`);
+  getWorkerUrl: (env) => env.WORKER_URL,
+  onAlert: async (alert, env) => {
+    // POST to your agent — it decides how/where to alert
+    await fetch('http://localhost/api/monitoring-alert', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(alert),
+    });
   },
 });
 
@@ -64,11 +75,13 @@ ClawdWatch follows a clear separation of concerns:
 | Tracking state transitions | clawdwatch |
 | Persisting history to R2 | clawdwatch |
 | Serving the dashboard UI | clawdwatch |
-| **Deciding how to alert** | **You** |
-| **Choosing notification channels** | **You** |
-| **Formatting alert messages** | **You** |
+| **Deciding how to alert** | **Your agent** (e.g. moltbot/openclaw) |
+| **Choosing notification channels** | **Your agent** |
+| **Formatting alert messages** | **Your agent** |
 
-This means clawdwatch has no opinions about Telegram, Slack, email, or any other notification channel. It gives you an `AlertPayload` and gets out of the way.
+This means clawdwatch has no opinions about Telegram, Slack, email, or any other notification channel. It gives you an `AlertPayload` and gets out of the way. In moltworker, the `onAlert` callback POSTs to the moltbot gateway — the agent decides which channel(s) to notify and how to format the message.
+
+If the agent isn't running when an alert fires, that's fine — the next cron run re-evaluates the checks and the dashboard always shows current state.
 
 ## Configuration
 
@@ -94,11 +107,34 @@ interface CheckConfig {
   name: string;
   type: 'api';              // 'browser' coming soon
   url: string;               // supports {{WORKER_URL}} placeholder
-  expectedStatus?: number;    // default: 200
+  method?: string;           // HTTP method (default: 'GET')
+  assertions?: Assertion[];  // custom assertions (default: statusCode 200)
+  retry?: {
+    count: number;           // retries on failure
+    delayMs: number;         // delay between retries
+  };
   timeoutMs?: number;         // override default
   failureThreshold?: number;  // override default
   tags?: string[];
 }
+```
+
+### Assertions
+
+Custom assertions let you validate beyond just status code:
+
+```typescript
+// Status code
+{ type: 'statusCode', operator: 'is', value: 200 }
+
+// Response header
+{ type: 'header', name: 'Content-Type', operator: 'contains', value: 'application/json' }
+
+// Response body
+{ type: 'body', operator: 'contains', value: '"status":"ok"' }
+
+// Response time
+{ type: 'responseTime', operator: 'lessThan', value: 5000 }
 ```
 
 ### Alert Payload
