@@ -318,8 +318,8 @@ export async function insertCheckResult(
   error: string | null,
 ): Promise<void> {
   await db.prepare(
-    'INSERT INTO check_results (check_id, status, response_time_ms, error) VALUES (?, ?, ?, ?)',
-  ).bind(checkId, status, responseTimeMs, error).run();
+    'INSERT INTO check_results (check_id, status, response_time_ms, error, created_at) VALUES (?, ?, ?, ?, ?)',
+  ).bind(checkId, status, responseTimeMs, error, new Date().toISOString()).run();
 }
 
 /** Batch-load 24h history for all given check IDs in one query. */
