@@ -22,6 +22,7 @@ export function parseCheckRow(row: CheckRow): CheckConfig {
     tags: JSON.parse(row.tags),
     group_id: row.group_id,
     regions: JSON.parse(row.regions),
+    interval_mins: row.interval_mins ?? 5,
     enabled: row.enabled === 1,
   };
 }
@@ -47,8 +48,8 @@ export async function loadCheck(db: D1Database, id: string): Promise<CheckConfig
 /** Create a new check */
 export async function createCheck(db: D1Database, check: Partial<CheckConfig> & { id: string; name: string; url: string }): Promise<void> {
   await db.prepare(`
-    INSERT INTO checks (id, name, type, url, method, headers, body, assertions, retry_count, retry_delay_ms, timeout_ms, failure_threshold, tags, group_id, regions, enabled)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO checks (id, name, type, url, method, headers, body, assertions, retry_count, retry_delay_ms, timeout_ms, failure_threshold, tags, group_id, regions, interval_mins, enabled)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).bind(
     check.id,
     check.name,
@@ -65,6 +66,7 @@ export async function createCheck(db: D1Database, check: Partial<CheckConfig> & 
     JSON.stringify(check.tags ?? []),
     check.group_id ?? null,
     JSON.stringify(check.regions ?? ['default']),
+    check.interval_mins ?? 5,
     check.enabled === false ? 0 : 1,
   ).run();
 }
@@ -89,6 +91,7 @@ export async function updateCheck(db: D1Database, id: string, updates: Partial<C
     tags: (v) => JSON.stringify(v),
     group_id: (v) => v,
     regions: (v) => JSON.stringify(v),
+    interval_mins: (v) => v,
     enabled: (v) => v ? 1 : 0,
   };
 

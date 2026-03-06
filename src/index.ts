@@ -80,6 +80,7 @@ export type {
   BodyAssertion,
   ResponseTimeAssertion,
   JsonPathAssertion,
+
   AlertPayload,
   AlertType,
   CheckResult,

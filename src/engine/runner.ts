@@ -8,7 +8,7 @@
 
 import type { CheckConfig, CheckResult, Assertion } from '../types';
 
-const MAX_BODY_SIZE = 64 * 1024; // 64KB max for body assertions
+const MAX_BODY_SIZE = 512 * 1024; // 512KB max for body assertions
 
 /**
  * Run a single check with retry support.
@@ -164,9 +164,22 @@ export function evaluateAssertions(
           break;
         }
         const actual = typeof extracted === 'string' ? extracted : JSON.stringify(extracted);
-        const failed = evaluateStringAssertion(assertion.operator, actual, assertion.value, false);
-        if (failed) {
-          failures.push(`jsonPath "${assertion.path}": ${failed}`);
+        // Handle numeric comparison operators
+        if (assertion.operator === 'lessThan' || assertion.operator === 'greaterThan') {
+          const numActual = Number(actual);
+          const numExpected = Number(assertion.value);
+          if (isNaN(numActual) || isNaN(numExpected)) {
+            failures.push(`jsonPath "${assertion.path}": cannot compare non-numeric values`);
+          } else if (assertion.operator === 'lessThan' && numActual >= numExpected) {
+            failures.push(`jsonPath "${assertion.path}": ${numActual} >= ${numExpected}`);
+          } else if (assertion.operator === 'greaterThan' && numActual <= numExpected) {
+            failures.push(`jsonPath "${assertion.path}": ${numActual} <= ${numExpected}`);
+          }
+        } else {
+          const failed = evaluateStringAssertion(assertion.operator, actual, assertion.value, false);
+          if (failed) {
+            failures.push(`jsonPath "${assertion.path}": ${failed}`);
+          }
         }
         break;
       }
@@ -208,7 +221,7 @@ function evaluateStringAssertion(
  * Resolve a simple JSON path ($.foo.bar, $.items[0].id) against an object.
  * Returns undefined for missing paths. No wildcards or recursive descent.
  */
-function resolveJsonPath(obj: unknown, path: string): unknown {
+export function resolveJsonPath(obj: unknown, path: string): unknown {
   if (!path.startsWith('$')) return undefined;
   const rest = path.slice(1); // strip leading $
   if (rest === '' || rest === '.') return obj;

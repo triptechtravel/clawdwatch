@@ -44,7 +44,7 @@ export interface ResponseTimeAssertion {
 export interface JsonPathAssertion {
   type: 'jsonPath';
   path: string;
-  operator: 'is' | 'isNot' | 'contains' | 'notContains' | 'matches';
+  operator: 'is' | 'isNot' | 'contains' | 'notContains' | 'matches' | 'lessThan' | 'greaterThan';
   value: string;
 }
 
@@ -73,6 +73,7 @@ export interface CheckConfig {
   tags: string[];
   group_id: string | null;
   regions: string[];
+  interval_mins: number;
   enabled: boolean;
 }
 
@@ -93,6 +94,7 @@ export interface CheckRow {
   tags: string;
   group_id: string | null;
   regions: string;
+  interval_mins: number;
   enabled: number;
   created_at: string;
   updated_at: string;
@@ -181,6 +183,7 @@ export interface ClawdWatchOptions<TEnv> {
     getD1: (env: TEnv) => D1Database;
     getR2: (env: TEnv) => R2Bucket;
     getAnalyticsEngine?: (env: TEnv) => AnalyticsEngineDataset;
+
   };
   defaults?: {
     failureThreshold?: number;

@@ -18,6 +18,7 @@ import { loadState, saveState, createEmptyCheckState } from './state';
 import { loadChecks } from './db';
 import { isInMaintenance, createIncident, resolveIncidents, loadAlertRules, ensureResultsTable, insertCheckResult, pruneHistory } from './db';
 import { runCheck } from './runner';
+
 import { computeTransition } from './alerts';
 
 interface OrchestratorDefaults {
@@ -35,7 +36,6 @@ export async function runMonitoringChecks<TEnv>(
   const db = options.storage.getD1(env);
   const bucket = options.storage.getR2(env);
   const ae = options.storage.getAnalyticsEngine?.(env);
-
   if (!bucket) {
     console.warn('[clawdwatch] R2 bucket not available, skipping checks');
     return;
@@ -59,9 +59,18 @@ export async function runMonitoringChecks<TEnv>(
     }
 
     const checkState = state.checks[check.id] ?? createEmptyCheckState();
-    const resolvedUrl = options.resolveUrl?.(check.url, env) ?? check.url;
+
+    // Skip if not enough time has elapsed since last check
+    if (checkState.lastCheck && check.interval_mins > 5) {
+      const elapsed = Date.now() - new Date(checkState.lastCheck).getTime();
+      const intervalMs = check.interval_mins * 60_000;
+      if (elapsed < intervalMs - 30_000) { // 30s buffer for cron jitter
+        continue;
+      }
+    }
 
     // Execute check
+    const resolvedUrl = options.resolveUrl?.(check.url, env) ?? check.url;
     // eslint-disable-next-line no-await-in-loop
     const result = await runCheck(check, resolvedUrl, defaults.userAgent);
 
