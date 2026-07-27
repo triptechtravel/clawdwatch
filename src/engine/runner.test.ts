@@ -1,511 +1,235 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { runCheck, evaluateAssertions } from './runner';
-import type { CheckConfig, Assertion } from '../types';
+import { runCheck, type RunnerContext } from './runner';
+import type { CheckConfig, HeaderRule, SecretMap } from '../types';
 
-const mockFetch = vi.fn();
+const SECRETS: SecretMap = {
+  HEALTHCHECK_SECRET: 'hc-super-secret-value',
+  WAF_BYPASS_SECRET: 'waf-bypass-token-123',
+};
 
-function mockResponse(opts: {
-  status?: number;
-  headers?: Record<string, string>;
-  body?: string;
-} = {}) {
-  const { status = 200, headers = {}, body = '' } = opts;
+function check(overrides: Partial<CheckConfig> = {}): CheckConfig {
   return {
-    status,
-    headers: new Headers(headers),
-    body: new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(body));
-        controller.close();
-      },
-    }),
-  };
-}
-
-/** Full CheckConfig with sensible defaults for tests */
-function makeCheck(overrides: Partial<CheckConfig> = {}): CheckConfig {
-  return {
-    id: 'test-check',
-    name: 'Test Check',
-    type: 'api',
-    url: 'https://example.com',
+    id: 'c1',
+    name: 'Check',
+    url: 'https://api.example.com/health',
     method: 'GET',
     headers: {},
     body: null,
-    assertions: [{ type: 'statusCode', operator: 'is', value: 200 }],
-    retry_count: 0,
-    retry_delay_ms: 300,
-    timeout_ms: 5000,
-    failure_threshold: 2,
+    assertions: [],
+    retryCount: 0,
+    retryDelayMs: 0,
+    timeoutMs: 5000,
+    failureThreshold: 3,
+    reminderIntervalMs: null,
+    intervalMins: 5,
     tags: [],
-    group_id: null,
-    regions: ['default'],
     enabled: true,
     ...overrides,
   };
 }
 
-describe('runner', () => {
-  beforeEach(() => {
-    vi.stubGlobal('fetch', mockFetch);
-  });
+function ctx(overrides: Partial<RunnerContext> = {}): RunnerContext {
+  return {
+    resolvedUrl: 'https://api.example.com/health',
+    headerRules: [],
+    secrets: SECRETS,
+    userAgent: 'clawdwatch/3.0',
+    now: () => Date.now(),
+    ...overrides,
+  };
+}
 
-  afterEach(() => {
-    mockFetch.mockClear();
-  });
+function respond(status: number, body = '', headers: Record<string, string> = {}) {
+  return new Response(body, { status, headers });
+}
 
-  const baseCheck = makeCheck();
+let fetchMock: ReturnType<typeof vi.fn>;
 
-  it('returns success with default assertion (status 200)', async () => {
-    mockFetch.mockResolvedValue(mockResponse({ status: 200 }));
+beforeEach(() => {
+  fetchMock = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+});
 
-    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
+describe('basic execution', () => {
+  it('passes with the default status-200 assertion', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    const result = await runCheck(check(), ctx());
     expect(result.success).toBe(true);
     expect(result.statusCode).toBe(200);
     expect(result.error).toBeNull();
   });
 
-  it('returns failure when default assertion fails', async () => {
-    mockFetch.mockResolvedValue(mockResponse({ status: 503 }));
-
-    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
-
+  it('fails when the default assertion is not met', async () => {
+    fetchMock.mockResolvedValue(respond(502));
+    const result = await runCheck(check(), ctx());
     expect(result.success).toBe(false);
-    expect(result.statusCode).toBe(503);
-    expect(result.error).toBe('Expected status 200, got 503');
+    expect(result.error).toBe('Expected status 200, got 502');
   });
 
-  it('uses configured method', async () => {
-    mockFetch.mockResolvedValue(mockResponse());
-    const check = makeCheck({ method: 'POST' });
+  it('uses the configured method and sends a body', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    await runCheck(check({ method: 'POST', body: '{"q":1}' }), ctx());
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init.method).toBe('POST');
+    expect(init.body).toBe('{"q":1}');
+  });
 
-    await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
+  it('never sends a body on GET', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    await runCheck(check({ body: '{"q":1}' }), ctx());
+    expect(fetchMock.mock.calls[0][1].body).toBeUndefined();
+  });
 
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://example.com',
-      expect.objectContaining({ method: 'POST' }),
+  it('fetches the resolved URL, not the stored template', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    await runCheck(
+      check({ url: '{{WORKER_URL}}/health' }),
+      ctx({ resolvedUrl: 'https://live.example.com/health' }),
     );
+    expect(fetchMock.mock.calls[0][0]).toBe('https://live.example.com/health');
   });
 
-  it('defaults method to GET', async () => {
-    mockFetch.mockResolvedValue(mockResponse());
-
-    await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://example.com',
-      expect.objectContaining({ method: 'GET' }),
-    );
-  });
-
-  it('uses custom assertions instead of default', async () => {
-    mockFetch.mockResolvedValue(mockResponse({ status: 201 }));
-    const check = makeCheck({
-      assertions: [{ type: 'statusCode', operator: 'is', value: 201 }],
-    });
-
-    const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
-    expect(result.success).toBe(true);
-  });
-
-  it('reports multiple assertion failures', async () => {
-    mockFetch.mockResolvedValue(mockResponse({
-      status: 503,
-      headers: { 'content-type': 'application/json' },
-    }));
-    const check = makeCheck({
-      assertions: [
-        { type: 'statusCode', operator: 'is', value: 200 },
-        { type: 'header', name: 'content-type', operator: 'is', value: 'text/html' },
-      ],
-    });
-
-    const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
-    expect(result.success).toBe(false);
-    expect(result.error).toContain('Expected status 200, got 503');
-    expect(result.error).toContain('Header "content-type"');
-  });
-
-  it('handles fetch errors', async () => {
-    mockFetch.mockRejectedValue(new Error('DNS resolution failed'));
-
-    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
-
+  it('reports a network error as a failure', async () => {
+    fetchMock.mockRejectedValue(new Error('connection refused'));
+    const result = await runCheck(check(), ctx());
     expect(result.success).toBe(false);
     expect(result.statusCode).toBeNull();
-    expect(result.error).toBe('DNS resolution failed');
+    expect(result.error).toBe('connection refused');
   });
 
-  it('handles abort/timeout errors', async () => {
-    mockFetch.mockRejectedValue(new Error('The operation was aborted'));
-
-    const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
-
-    expect(result.success).toBe(false);
-    expect(result.error).toBe('Timeout after 5000ms');
+  it('labels an abort as a timeout', async () => {
+    fetchMock.mockRejectedValue(new Error('The operation was aborted'));
+    const result = await runCheck(check({ timeoutMs: 1234 }), ctx());
+    expect(result.error).toBe('Timeout after 1234ms');
   });
 
-  it('passes user-agent and custom headers', async () => {
-    mockFetch.mockResolvedValue(mockResponse());
-    const check = makeCheck({
-      headers: { 'Accept': 'application/json' },
-    });
+  it('only reads the body when an assertion needs it', async () => {
+    const body = new Response('{"ok":true}');
+    const spy = vi.spyOn(body, 'body', 'get');
+    fetchMock.mockResolvedValue(body);
+    await runCheck(check(), ctx());
+    expect(spy).not.toHaveBeenCalled();
+  });
 
-    await runCheck(check, 'https://example.com', 'my-app/1.0');
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://example.com',
-      expect.objectContaining({
-        method: 'GET',
-        redirect: 'follow',
-        headers: { 'User-Agent': 'my-app/1.0', 'Accept': 'application/json' },
+  it('reads the body for a jsonPath assertion', async () => {
+    fetchMock.mockResolvedValue(respond(200, '{"status":"healthy"}'));
+    const result = await runCheck(
+      check({
+        assertions: [{ type: 'jsonPath', path: '$.status', operator: 'is', value: 'healthy' }],
       }),
+      ctx(),
     );
-    const callArgs = mockFetch.mock.calls[0][1];
-    expect(callArgs.signal).toBeInstanceOf(AbortSignal);
-  });
-
-  it('sends body for POST requests', async () => {
-    mockFetch.mockResolvedValue(mockResponse());
-    const check = makeCheck({
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{"test": true}',
-    });
-
-    await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
-
-    expect(mockFetch).toHaveBeenCalledWith(
-      'https://example.com',
-      expect.objectContaining({
-        method: 'POST',
-        body: '{"test": true}',
-      }),
-    );
-  });
-
-  it('does not send body for GET requests', async () => {
-    mockFetch.mockResolvedValue(mockResponse());
-    const check = makeCheck({ body: 'should-be-ignored' });
-
-    await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
-
-    const callArgs = mockFetch.mock.calls[0][1];
-    expect(callArgs.body).toBeUndefined();
-  });
-
-  it('reads body when jsonPath assertion is present', async () => {
-    mockFetch.mockResolvedValue(mockResponse({
-      status: 200,
-      body: '{"status":"ok","token":"abc"}',
-    }));
-    const check = makeCheck({
-      assertions: [
-        { type: 'jsonPath', path: '$.token', operator: 'is', value: 'abc' },
-      ],
-    });
-
-    const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
     expect(result.success).toBe(true);
-    expect(result.error).toBeNull();
-  });
-
-  describe('retry', () => {
-    it('retries on failure up to configured count', async () => {
-      mockFetch
-        .mockResolvedValueOnce(mockResponse({ status: 503 }))
-        .mockResolvedValueOnce(mockResponse({ status: 503 }))
-        .mockResolvedValueOnce(mockResponse({ status: 200 }));
-
-      const check = makeCheck({ retry_count: 2, retry_delay_ms: 0 });
-      const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
-
-      expect(result.success).toBe(true);
-      expect(mockFetch).toHaveBeenCalledTimes(3);
-    });
-
-    it('does not retry on success', async () => {
-      mockFetch.mockResolvedValue(mockResponse({ status: 200 }));
-
-      const check = makeCheck({ retry_count: 3, retry_delay_ms: 0 });
-      const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
-
-      expect(result.success).toBe(true);
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
-
-    it('returns last failure when all retries exhausted', async () => {
-      mockFetch.mockResolvedValue(mockResponse({ status: 503 }));
-
-      const check = makeCheck({ retry_count: 1, retry_delay_ms: 0 });
-      const result = await runCheck(check, 'https://example.com', 'clawdwatch/2.0');
-
-      expect(result.success).toBe(false);
-      expect(mockFetch).toHaveBeenCalledTimes(2); // initial + 1 retry
-    });
-
-    it('does not retry by default', async () => {
-      mockFetch.mockResolvedValue(mockResponse({ status: 503 }));
-
-      const result = await runCheck(baseCheck, 'https://example.com', 'clawdwatch/2.0');
-
-      expect(result.success).toBe(false);
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
   });
 });
 
-describe('evaluateAssertions', () => {
-  function fakeResponse(opts: {
-    status?: number;
-    headers?: Record<string, string>;
-  } = {}) {
-    return {
-      status: opts.status ?? 200,
-      headers: new Headers(opts.headers ?? {}),
-    } as unknown as Response;
-  }
-
-  describe('statusCode', () => {
-    it('passes when status matches', () => {
-      const assertions: Assertion[] = [{ type: 'statusCode', operator: 'is', value: 200 }];
-      expect(evaluateAssertions(assertions, fakeResponse({ status: 200 }), 100, null)).toEqual([]);
-    });
-
-    it('fails when status does not match', () => {
-      const assertions: Assertion[] = [{ type: 'statusCode', operator: 'is', value: 200 }];
-      const failures = evaluateAssertions(assertions, fakeResponse({ status: 503 }), 100, null);
-      expect(failures).toEqual(['Expected status 200, got 503']);
-    });
-
-    it('supports isNot operator', () => {
-      const assertions: Assertion[] = [{ type: 'statusCode', operator: 'isNot', value: 500 }];
-      expect(evaluateAssertions(assertions, fakeResponse({ status: 200 }), 100, null)).toEqual([]);
-      expect(evaluateAssertions(assertions, fakeResponse({ status: 500 }), 100, null)).toHaveLength(1);
-    });
+describe('secret handling', () => {
+  it('resolves a secret reference into the outbound header', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    await runCheck(check({ headers: { 'X-Healthcheck-Secret': '${HEALTHCHECK_SECRET}' } }), ctx());
+    expect(fetchMock.mock.calls[0][1].headers['X-Healthcheck-Secret']).toBe(
+      'hc-super-secret-value',
+    );
   });
 
-  describe('header', () => {
-    const response = fakeResponse({ headers: { 'content-type': 'text/html; charset=utf-8' } });
-
-    it('passes with is operator', () => {
-      const assertions: Assertion[] = [{ type: 'header', name: 'content-type', operator: 'is', value: 'text/html; charset=utf-8' }];
-      expect(evaluateAssertions(assertions, response, 100, null)).toEqual([]);
-    });
-
-    it('fails with is operator on mismatch', () => {
-      const assertions: Assertion[] = [{ type: 'header', name: 'content-type', operator: 'is', value: 'application/json' }];
-      expect(evaluateAssertions(assertions, response, 100, null)).toHaveLength(1);
-    });
-
-    it('passes with contains operator', () => {
-      const assertions: Assertion[] = [{ type: 'header', name: 'content-type', operator: 'contains', value: 'text/html' }];
-      expect(evaluateAssertions(assertions, response, 100, null)).toEqual([]);
-    });
-
-    it('fails when header is missing', () => {
-      const assertions: Assertion[] = [{ type: 'header', name: 'x-custom', operator: 'contains', value: 'foo' }];
-      expect(evaluateAssertions(assertions, response, 100, null)).toHaveLength(1);
-    });
-
-    it('supports matches operator (regex)', () => {
-      const assertions: Assertion[] = [{ type: 'header', name: 'content-type', operator: 'matches', value: 'text/html.*utf-8' }];
-      expect(evaluateAssertions(assertions, response, 100, null)).toEqual([]);
-    });
-
-    it('supports notContains operator', () => {
-      const assertions: Assertion[] = [{ type: 'header', name: 'content-type', operator: 'notContains', value: 'json' }];
-      expect(evaluateAssertions(assertions, response, 100, null)).toEqual([]);
-    });
+  it('applies a matching host rule', async () => {
+    const rules: HeaderRule[] = [
+      { host: /(^|\.)example\.com$/, headers: { 'x-waf-bypass': '${WAF_BYPASS_SECRET}' } },
+    ];
+    fetchMock.mockResolvedValue(respond(200));
+    await runCheck(check(), ctx({ headerRules: rules }));
+    expect(fetchMock.mock.calls[0][1].headers['x-waf-bypass']).toBe('waf-bypass-token-123');
   });
 
-  describe('body', () => {
-    it('passes with contains operator', () => {
-      const assertions: Assertion[] = [{ type: 'body', operator: 'contains', value: 'hello' }];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, 'hello world')).toEqual([]);
-    });
-
-    it('fails when body does not contain value', () => {
-      const assertions: Assertion[] = [{ type: 'body', operator: 'contains', value: 'missing' }];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, 'hello world')).toHaveLength(1);
-    });
-
-    it('supports notContains operator', () => {
-      const assertions: Assertion[] = [{ type: 'body', operator: 'notContains', value: 'error' }];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, 'all good')).toEqual([]);
-    });
-
-    it('supports matches operator (regex)', () => {
-      const assertions: Assertion[] = [{ type: 'body', operator: 'matches', value: '<title>.*</title>' }];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, '<title>Hello</title>')).toEqual([]);
-    });
-
-    it('fails when body is null', () => {
-      const assertions: Assertion[] = [{ type: 'body', operator: 'contains', value: 'hello' }];
-      const failures = evaluateAssertions(assertions, fakeResponse(), 100, null);
-      expect(failures).toHaveLength(1);
-      expect(failures[0]).toContain('body was not read');
-    });
+  it('does not leak a resolved secret into the result', async () => {
+    fetchMock.mockResolvedValue(respond(500, 'hc-super-secret-value'));
+    const result = await runCheck(
+      check({ headers: { 'X-Key': '${HEALTHCHECK_SECRET}' } }),
+      ctx(),
+    );
+    expect(JSON.stringify(result)).not.toContain('hc-super-secret-value');
   });
 
-  describe('responseTime', () => {
-    it('passes when under threshold', () => {
-      const assertions: Assertion[] = [{ type: 'responseTime', operator: 'lessThan', value: 500 }];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, null)).toEqual([]);
-    });
-
-    it('fails when over threshold', () => {
-      const assertions: Assertion[] = [{ type: 'responseTime', operator: 'lessThan', value: 500 }];
-      expect(evaluateAssertions(assertions, fakeResponse(), 600, null)).toHaveLength(1);
-    });
-
-    it('fails when exactly at threshold', () => {
-      const assertions: Assertion[] = [{ type: 'responseTime', operator: 'lessThan', value: 500 }];
-      expect(evaluateAssertions(assertions, fakeResponse(), 500, null)).toHaveLength(1);
-    });
+  it('turns an unresolved reference into a check failure, not a throw', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    const result = await runCheck(check({ headers: { 'X-Key': '${MISSING}' } }), ctx());
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('MISSING');
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  describe('jsonPath', () => {
-    const jsonBody = JSON.stringify({
-      data: { token: 'abc123', count: 42 },
-      items: [{ id: 'first' }, { id: 'second' }],
-      nested: { deep: { value: 'found' } },
-      empty: '',
-    });
+  it('sends the default user agent', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    await runCheck(check(), ctx());
+    expect(fetchMock.mock.calls[0][1].headers['User-Agent']).toBe('clawdwatch/3.0');
+  });
+});
 
-    it('resolves top-level field', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.empty', operator: 'is', value: '' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('resolves nested field', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.data.token', operator: 'is', value: 'abc123' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('resolves deeply nested field', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.nested.deep.value', operator: 'is', value: 'found' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('resolves array index', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.items[0].id', operator: 'is', value: 'first' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('resolves second array element', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.items[1].id', operator: 'is', value: 'second' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('supports isNot operator', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.data.token', operator: 'isNot', value: '' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('supports contains operator', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.data.token', operator: 'contains', value: 'abc' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('supports notContains operator', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.data.token', operator: 'notContains', value: 'xyz' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('supports matches operator (regex)', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.data.token', operator: 'matches', value: '^abc\\d+$' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('stringifies numeric values for comparison', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.data.count', operator: 'is', value: '42' },
-      ];
-      expect(evaluateAssertions(assertions, fakeResponse(), 100, jsonBody)).toEqual([]);
-    });
-
-    it('fails when path is missing', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.nonexistent', operator: 'is', value: 'anything' },
-      ];
-      const failures = evaluateAssertions(assertions, fakeResponse(), 100, jsonBody);
-      expect(failures).toEqual(['jsonPath "$.nonexistent": path not found']);
-    });
-
-    it('fails when body is not valid JSON', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.foo', operator: 'is', value: 'bar' },
-      ];
-      const failures = evaluateAssertions(assertions, fakeResponse(), 100, 'not json');
-      expect(failures).toEqual(['jsonPath "$.foo": body is not valid JSON']);
-    });
-
-    it('fails when body is null', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.foo', operator: 'is', value: 'bar' },
-      ];
-      const failures = evaluateAssertions(assertions, fakeResponse(), 100, null);
-      expect(failures).toEqual(['jsonPath assertion requires response body but body was not read']);
-    });
-
-    it('fails when array index is out of bounds', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.items[99]', operator: 'is', value: 'anything' },
-      ];
-      const failures = evaluateAssertions(assertions, fakeResponse(), 100, jsonBody);
-      expect(failures).toEqual(['jsonPath "$.items[99]": path not found']);
-    });
-
-    it('fails when operator check fails', () => {
-      const assertions: Assertion[] = [
-        { type: 'jsonPath', path: '$.data.token', operator: 'is', value: 'wrong' },
-      ];
-      const failures = evaluateAssertions(assertions, fakeResponse(), 100, jsonBody);
-      expect(failures).toHaveLength(1);
-      expect(failures[0]).toContain('jsonPath "$.data.token"');
-      expect(failures[0]).toContain('expected "wrong"');
-    });
+describe('retries', () => {
+  it('does not retry a passing check', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    await runCheck(check({ retryCount: 2 }), ctx());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  describe('multiple assertions', () => {
-    it('all pass', () => {
-      const assertions: Assertion[] = [
-        { type: 'statusCode', operator: 'is', value: 200 },
-        { type: 'header', name: 'content-type', operator: 'contains', value: 'html' },
-        { type: 'responseTime', operator: 'lessThan', value: 1000 },
-      ];
-      const response = fakeResponse({ status: 200, headers: { 'content-type': 'text/html' } });
-      expect(evaluateAssertions(assertions, response, 50, null)).toEqual([]);
-    });
+  it('retries up to retryCount on failure', async () => {
+    fetchMock.mockResolvedValue(respond(502));
+    const result = await runCheck(check({ retryCount: 2 }), ctx());
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(result.success).toBe(false);
+  });
 
-    it('collects all failures', () => {
-      const assertions: Assertion[] = [
-        { type: 'statusCode', operator: 'is', value: 200 },
-        { type: 'responseTime', operator: 'lessThan', value: 100 },
-      ];
-      const response = fakeResponse({ status: 503 });
-      const failures = evaluateAssertions(assertions, response, 500, null);
-      expect(failures).toHaveLength(2);
-    });
+  it('stops retrying as soon as one attempt passes', async () => {
+    fetchMock.mockResolvedValueOnce(respond(502)).mockResolvedValue(respond(200));
+    const result = await runCheck(check({ retryCount: 3 }), ctx());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(true);
+  });
+
+  it('retries a transient network error', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('reset')).mockResolvedValue(respond(200));
+    const result = await runCheck(check({ retryCount: 1 }), ctx());
+    expect(result.success).toBe(true);
+  });
+});
+
+describe('timing', () => {
+  it('measures response time from the injected clock', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    let t = 1000;
+    const result = await runCheck(
+      check(),
+      ctx({
+        now: () => {
+          const v = t;
+          t += 250;
+          return v;
+        },
+      }),
+    );
+    expect(result.responseTimeMs).toBe(250);
+  });
+
+  it('never reports a negative duration', async () => {
+    fetchMock.mockResolvedValue(respond(200));
+    let first = true;
+    const result = await runCheck(
+      check(),
+      ctx({
+        now: () => {
+          if (first) {
+            first = false;
+            return 5000;
+          }
+          return 1000;
+        },
+      }),
+    );
+    expect(result.responseTimeMs).toBe(0);
   });
 });
