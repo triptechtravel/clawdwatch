@@ -1,7 +1,7 @@
 {
   "name": "clawdwatch",
-  "version": "0.1.1",
-  "description": "Synthetic monitoring for Cloudflare Workers \u2014 health checks, state machine alerts, and an embedded dashboard",
+  "version": "0.2.0",
+  "description": "Synthetic monitoring for Cloudflare Workers \u2014 deterministic detection, pluggable alerting, and an embedded dashboard",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,7 +12,10 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "migrations",
+    "README.md",
+    "SECURITY.md"
   ],
   "scripts": {
     "build:dashboard": "vite build --config vite.dashboard.config.ts",
@@ -35,8 +38,11 @@
     "monitoring",
     "uptime",
     "synthetic",
+    "healthcheck",
     "alerts",
-    "hono"
+    "d1",
+    "hono",
+    "status-page"
   ],
   "repository": {
     "type": "git",
@@ -62,5 +68,13 @@
     "vite": "^6.1.0",
     "vitepress": "^1.6.4",
     "vitest": "^4.0.0"
-  }
+  },
+  "homepage": "https://triptechtravel.github.io/clawdwatch/",
+  "bugs": {
+    "url": "https://github.com/triptechtravel/clawdwatch/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
 }

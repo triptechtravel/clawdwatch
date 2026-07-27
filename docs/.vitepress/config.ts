@@ -1,46 +1,44 @@
 import { defineConfig } from "vitepress";
 
 export default defineConfig({
-  title: "ClawdWatch",
+  title: "clawdwatch",
   description:
-    "Synthetic monitoring for Cloudflare Workers — health checks, state machine alerts, and an embedded dashboard",
+    "Synthetic monitoring for Cloudflare Workers — deterministic detection, pluggable alerting, and a dashboard worth reading",
   base: "/clawdwatch/",
-  head: [
-    ["link", { rel: "icon", href: "https://openclaw.ai/favicon.svg" }],
-  ],
   themeConfig: {
-    logo: "https://openclaw.ai/favicon.svg",
     nav: [
       { text: "Guide", link: "/guide/getting-started" },
-      { text: "Integration", link: "/integration/agent-setup" },
-      { text: "OpenClaw", link: "https://openclaw.ai/" },
-      {
-        text: "GitHub",
-        link: "https://github.com/triptechtravel/clawdwatch",
-      },
+      { text: "Alerting", link: "/integration/notifiers" },
+      { text: "GitHub", link: "https://github.com/triptechtravel/clawdwatch" },
     ],
     sidebar: [
       {
         text: "Guide",
         items: [
-          { text: "Getting Started", link: "/guide/getting-started" },
+          { text: "Getting started", link: "/guide/getting-started" },
           { text: "Configuration", link: "/guide/configuration" },
-          { text: "API Reference", link: "/guide/api-reference" },
+          { text: "Secrets", link: "/guide/secrets" },
+          { text: "API reference", link: "/guide/api-reference" },
         ],
       },
       {
-        text: "Integration",
+        text: "Alerting",
         items: [
-          { text: "Agent Setup", link: "/integration/agent-setup" },
-          { text: "Wrangler Bindings", link: "/integration/wrangler" },
+          { text: "Notifiers", link: "/integration/notifiers" },
+          { text: "AI agents", link: "/integration/agents" },
+        ],
+      },
+      {
+        text: "Deploying",
+        items: [
+          { text: "Worker setup", link: "/integration/wrangler" },
+          { text: "Authentication", link: "/integration/auth" },
         ],
       },
     ],
     socialLinks: [
-      {
-        icon: "github",
-        link: "https://github.com/triptechtravel/clawdwatch",
-      },
+      { icon: "github", link: "https://github.com/triptechtravel/clawdwatch" },
     ],
+    search: { provider: "local" },
   },
 });

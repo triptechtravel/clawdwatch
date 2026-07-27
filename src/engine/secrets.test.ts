@@ -153,13 +153,13 @@ describe('buildRequestHeaders', () => {
 
   it('lets the check override the default user agent', () => {
     const headers = buildRequestHeaders(
-      check({ headers: { 'User-Agent': 'CamperMate/4.6' } }),
+      check({ headers: { 'User-Agent': 'ExampleApp/1.0' } }),
       'https://other.test/',
       [],
       {},
       'clawdwatch/3.0',
     );
-    expect(headers['User-Agent']).toBe('CamperMate/4.6');
+    expect(headers['User-Agent']).toBe('ExampleApp/1.0');
   });
 
   it('survives a malformed URL without throwing', () => {

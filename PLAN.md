@@ -2,8 +2,8 @@
 
 Synthetic monitoring for Cloudflare Workers, rebuilt as proper open source.
 Detection stays deterministic in the library; deciding what to do about it is
-pluggable — Slack, webhooks, or an AI agent (moltworker/OpenClaw, Workers AI,
-anything with an HTTP surface) — **without modifying the agent**.
+pluggable — Slack, a signed webhook, or an AI agent (anything with an HTTP
+surface) — **without modifying the agent**.
 
 Target: fully replaces the private `cloudflare-worker-functions/healthcheck`
 worker, and is deployable by a stranger in under ten minutes.
@@ -23,7 +23,7 @@ worker, and is deployable by a stranger in under ten minutes.
    emails. See §6.
 4. **Agents are consumers, not dependencies.** Integration happens over the
    agent's existing public surface (HTTP + self-describing payloads).
-   clawdwatch never requires a fork or patch of moltworker/OpenClaw.
+   clawdwatch never requires a fork or patch of the agent.
 5. **Every capability is exercised by the reference deployment.** No dead
    schema (the v2 `alert_rules`/`check_groups`/`regions` mistake).
 
@@ -284,9 +284,8 @@ request.
 contain a configured secret *value* (not ref) is rejected with a pointed error
 ("use `${NAME}`"). This is what keeps a UI-driven system honest.
 
-**Repo hygiene:** no real hostnames in fixtures (`example.com` only — current
-tests already leak `campermate.com` topology into the public repo via
-`examples/`; scrub), `SECURITY.md` with a disclosure contact, secret-scanning
+**Repo hygiene:** no real hostnames in fixtures or docs — `example.com` only,
+verified by a CI grep, `SECURITY.md` with a disclosure contact, secret-scanning
 + gitleaks in CI, and the reference worker's `wrangler.jsonc` uses placeholder
 IDs.
 

@@ -5,7 +5,7 @@ import type { AlertEvent, CheckSummary, NotifierContext } from '../types';
 const ctx: NotifierContext<unknown> = { env: {}, resolve: (t) => t };
 const AT = '2026-07-27T00:00:00.000Z';
 
-function summary(name = 'CamperMate Homepage'): CheckSummary {
+function summary(name = 'Marketing Site'): CheckSummary {
   return { id: 'home', name, url: 'https://example.com/en', tags: ['core'], status: 'unhealthy' };
 }
 
@@ -48,7 +48,7 @@ describe('buildPayload', () => {
     expect(payload.attachments[0].color).toBe('#E01E5A');
     const text = JSON.stringify(payload);
     expect(text).toContain('Incident');
-    expect(text).toContain('CamperMate Homepage');
+    expect(text).toContain('Marketing Site');
     expect(text).toContain('Expected status 200, got 502');
     expect(text).toContain('3 consecutive failures');
   });

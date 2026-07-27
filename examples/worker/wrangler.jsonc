@@ -1,0 +1,33 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clawdwatch",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // Create with: wrangler d1 create clawdwatch
+  // then paste the id it prints here.
+  "d1_databases": [
+    {
+      "binding": "MONITORING_DB",
+      "database_name": "clawdwatch",
+      "database_id": "REPLACE_WITH_YOUR_DATABASE_ID",
+      "migrations_dir": "../../migrations"
+    }
+  ],
+
+  // Checks run on this schedule. Individual checks can ask for a longer
+  // interval; none can run more often than the cron fires.
+  "triggers": { "crons": ["*/5 * * * *"] },
+
+  "vars": {
+    "BASE_URL": "https://clawdwatch.example.workers.dev"
+  }
+
+  // Secrets are set with `wrangler secret put NAME`, never in this file:
+  //   SLACK_WEBHOOK_URL      alerts land in Slack
+  //   ALERT_SIGNING_SECRET   signs outbound webhooks and capability links
+  //   CF_ACCESS_TEAM_DOMAIN  e.g. myteam.cloudflareaccess.com
+  //   CF_ACCESS_AUD          the Access application's AUD tag
+}
