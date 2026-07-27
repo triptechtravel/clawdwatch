@@ -19,6 +19,7 @@ import { dispatch, type DeliveryReport } from './notify';
 import { slack } from './notify/slack';
 import { resolveTemplate } from './engine/secrets';
 import { createRoutes } from './routes';
+import { insertDeliveryStatement } from './engine/store/d1';
 
 export interface Monitor<TEnv> {
   /** Execute one monitoring pass and deliver any resulting alerts. */
@@ -60,6 +61,28 @@ export function createMonitor<TEnv>(options: ClawdWatchOptions<TEnv>): Monitor<T
     });
 
     const deliveries = await dispatch(report.events, notifiers, { env, resolve });
+
+    // Persist delivery outcomes so the dashboard can answer "did the last
+    // alert actually arrive?" — unanswerable in v2, which is how a dead alert
+    // path stayed invisible.
+    if (deliveries.length > 0) {
+      const at = new Date().toISOString();
+      const db = options.d1(env);
+      await db
+        .batch(
+          deliveries.map((d) =>
+            insertDeliveryStatement(db, {
+              notifier: d.notifier,
+              eventKind: d.kind,
+              ok: d.ok,
+              error: d.error ?? null,
+              attempts: d.attempts,
+              deliveredAt: at,
+            }),
+          ),
+        )
+        .catch((err) => console.error('[clawdwatch] recording deliveries failed:', err));
+    }
 
     return { ...report, deliveries };
   }

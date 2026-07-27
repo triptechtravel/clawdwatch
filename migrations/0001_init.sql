@@ -87,3 +87,18 @@ CREATE TABLE IF NOT EXISTS maintenance_windows (
 );
 
 CREATE INDEX IF NOT EXISTS idx_maintenance_window ON maintenance_windows (starts_at, ends_at);
+
+-- Notifier delivery log. Small and self-pruning: the dashboard needs "did the
+-- last alert actually arrive?", which is precisely the question nobody could
+-- answer when a broken alert path went unnoticed for months.
+CREATE TABLE IF NOT EXISTS notifier_deliveries (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  notifier            TEXT NOT NULL,
+  event_kind          TEXT NOT NULL,
+  ok                  INTEGER NOT NULL,
+  error               TEXT,
+  attempts            INTEGER NOT NULL DEFAULT 1,
+  delivered_at        TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_deliveries_at ON notifier_deliveries (delivered_at);

@@ -20,12 +20,14 @@ import {
   insertResultStatement,
   listChecks,
   listIncidents,
+  latestDeliveries,
   listResults,
   loadStates,
   upsertCheck,
 } from '../engine/store/d1';
 import { authenticate, AuthError, type AuthConfig, type Principal } from '../auth';
 import { buildAgentDoc } from './agent-md';
+import { dashboardHtml } from '../dashboard-html';
 
 export interface RouteConfig<TEnv> {
   options: ClawdWatchOptions<TEnv>;
@@ -309,6 +311,13 @@ export function createRoutes<TEnv>(config: RouteConfig<TEnv>): Hono<{ Bindings: 
     return c.json({ windows });
   });
 
+  // ── Notifier health ───────────────────────────────────────────────────
+
+  app.get('/api/deliveries', async (c) => {
+    const deliveries = await latestDeliveries(db(envOf(c)));
+    return c.json({ deliveries });
+  });
+
   // ── Config round-trip ─────────────────────────────────────────────────
 
   app.get('/api/config', async (c) => {
@@ -356,6 +365,12 @@ export function createRoutes<TEnv>(config: RouteConfig<TEnv>): Hono<{ Bindings: 
     const base = options.baseUrl?.(envOf(c)) ?? new URL(c.req.url).origin;
     return c.text(buildAgentDoc(base), 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
   });
+
+  // ── Dashboard ─────────────────────────────────────────────────────────
+  // Last, so it never shadows an /api route.
+
+  app.get('/', (c) => c.html(dashboardHtml));
+  app.get('/dashboard', (c) => c.html(dashboardHtml));
 
   return app;
 }

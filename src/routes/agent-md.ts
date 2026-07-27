@@ -103,6 +103,12 @@ export const ROUTES: RouteDoc[] = [
   },
   {
     method: 'GET',
+    path: '/api/deliveries',
+    summary: 'Most recent alert delivery per notifier — did the last alert arrive?',
+    auth: 'public',
+  },
+  {
+    method: 'GET',
     path: '/api/config',
     summary: 'Export every check as JSON, safe to commit (secrets stay as references).',
     auth: 'public',

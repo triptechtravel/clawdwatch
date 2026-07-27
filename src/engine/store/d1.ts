@@ -396,3 +396,67 @@ export function windowFor(
   }
   return null;
 }
+
+// ── Notifier deliveries ─────────────────────────────────────────────────
+
+export interface DeliveryRow {
+  notifier: string;
+  eventKind: string;
+  ok: boolean;
+  error: string | null;
+  attempts: number;
+  deliveredAt: string;
+}
+
+export function insertDeliveryStatement(
+  db: D1Database,
+  delivery: DeliveryRow,
+): D1PreparedStatement {
+  return db
+    .prepare(
+      `INSERT INTO notifier_deliveries (notifier, event_kind, ok, error, attempts, delivered_at)
+       VALUES (?,?,?,?,?,?)`,
+    )
+    .bind(
+      delivery.notifier,
+      delivery.eventKind,
+      delivery.ok ? 1 : 0,
+      delivery.error,
+      delivery.attempts,
+      delivery.deliveredAt,
+    );
+}
+
+/** Most recent delivery per notifier — what the dashboard panel shows. */
+export async function latestDeliveries(db: D1Database): Promise<DeliveryRow[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT d.notifier, d.event_kind, d.ok, d.error, d.attempts, d.delivered_at
+       FROM notifier_deliveries d
+       JOIN (SELECT notifier, MAX(id) AS max_id FROM notifier_deliveries GROUP BY notifier) m
+         ON d.id = m.max_id
+       ORDER BY d.notifier`,
+    )
+    .all<{
+      notifier: string;
+      event_kind: string;
+      ok: number;
+      error: string | null;
+      attempts: number;
+      delivered_at: string;
+    }>();
+
+  return (results ?? []).map((r) => ({
+    notifier: r.notifier,
+    eventKind: r.event_kind,
+    ok: r.ok === 1,
+    error: r.error,
+    attempts: r.attempts,
+    deliveredAt: r.delivered_at,
+  }));
+}
+
+export async function pruneDeliveries(db: D1Database, retentionHours: number): Promise<void> {
+  const cutoff = new Date(Date.now() - retentionHours * 3600_000).toISOString();
+  await db.prepare('DELETE FROM notifier_deliveries WHERE delivered_at < ?').bind(cutoff).run();
+}
