@@ -250,6 +250,8 @@ export interface ClawdWatchDefaults {
 
 export interface ClawdWatchOptions<TEnv> {
   d1: (env: TEnv) => D1Database;
+  /** API authorization. Omit and writes are refused with 403. */
+  auth?: (env: TEnv) => import('./auth').AuthConfig;
   /** Secret values, keyed by the name used in `${NAME}` references. */
   secrets?: (env: TEnv) => SecretMap;
   headerRules?: HeaderRule[];

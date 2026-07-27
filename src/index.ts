@@ -18,12 +18,17 @@ import { runMonitoringChecks, type RunReport } from './engine/orchestrator';
 import { dispatch, type DeliveryReport } from './notify';
 import { slack } from './notify/slack';
 import { resolveTemplate } from './engine/secrets';
+import { createRoutes } from './routes';
 
 export interface Monitor<TEnv> {
   /** Execute one monitoring pass and deliver any resulting alerts. */
   runChecks(env: TEnv): Promise<RunReport & { deliveries: DeliveryReport[] }>;
   /** Cron entry point. */
   scheduled(event: ScheduledController, env: TEnv, ctx: ExecutionContext): Promise<void>;
+  /** HTTP entry point — the API (and, when built, the dashboard). */
+  fetch(request: Request, env: TEnv, ctx: ExecutionContext): Promise<Response>;
+  /** The Hono app, for mounting under your own routes. */
+  app: ReturnType<typeof createRoutes<TEnv>>;
 }
 
 export function createMonitor<TEnv>(options: ClawdWatchOptions<TEnv>): Monitor<TEnv> {
@@ -59,8 +64,19 @@ export function createMonitor<TEnv>(options: ClawdWatchOptions<TEnv>): Monitor<T
     return { ...report, deliveries };
   }
 
+  const app = createRoutes<TEnv>({
+    options,
+    // Auth is resolved per request so it can read from env.
+    auth: {},
+    resolveAuth: options.auth,
+  });
+
   return {
+    app,
     runChecks,
+    async fetch(request, env, ctx) {
+      return app.fetch(request, env as Record<string, unknown>, ctx);
+    },
     async scheduled(_event, env, ctx) {
       // waitUntil so delivery retries survive the handler returning.
       const work = runChecks(env).catch((err) => {
@@ -116,6 +132,20 @@ export {
   type WebhookOptions,
 } from './notify/webhook';
 export { runMonitoringChecks, isDue, type RunReport } from './engine/orchestrator';
+export { createRoutes, normaliseCheck } from './routes';
+export { ROUTES, buildAgentDoc, type RouteDoc } from './routes/agent-md';
+export {
+  authenticate,
+  requireAuth,
+  mintCapability,
+  verifyCapability,
+  verifyAccessJwt,
+  AuthError,
+  AccessVerificationError,
+  type AuthConfig,
+  type Principal,
+  type AccessIdentity,
+} from './auth';
 export { computeTransition, emptyState, type Transition } from './engine/transition';
 export { evaluateAssertions, resolveJsonPath } from './engine/assertions';
 export {
