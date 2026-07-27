@@ -34,8 +34,15 @@ CREATE INDEX IF NOT EXISTS idx_checks_enabled ON checks (enabled);
 
 -- Hot state for the alert machine. One row per check.
 -- last_alert_at is what makes reminders expressible.
+--
+-- Deliberately NOT a foreign key to checks(id). A run writes every check's
+-- result and state in one batch; if a check were deleted mid-run, an FK
+-- violation would fail the whole batch and silently lose that tick for every
+-- other check too. State is derived data, deleteCheck() clears it explicitly,
+-- and an orphaned row is inert — loadStates only ever reads state for checks
+-- that still exist.
 CREATE TABLE IF NOT EXISTS check_state (
-  check_id            TEXT PRIMARY KEY REFERENCES checks(id) ON DELETE CASCADE,
+  check_id            TEXT PRIMARY KEY,
   status              TEXT NOT NULL DEFAULT 'unknown',
   consecutive_failures INTEGER NOT NULL DEFAULT 0,
   last_check_at       TEXT,

@@ -1,7 +1,7 @@
 {
   "name": "clawdwatch",
   "version": "0.1.1",
-  "description": "Synthetic monitoring for Cloudflare Workers — health checks, state machine alerts, and an embedded dashboard",
+  "description": "Synthetic monitoring for Cloudflare Workers \u2014 health checks, state machine alerts, and an embedded dashboard",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -19,14 +19,15 @@
     "build:inline": "tsx scripts/inline-assets.ts",
     "build:server": "tsup",
     "build": "npm run build:dashboard && npm run build:inline && npm run build:server",
-    "typecheck:examples": "tsc -p examples/tsconfig.json",
-    "test": "vitest run && npm run typecheck:examples",
+    "test": "npm run test:unit && npm run test:integration",
     "test:watch": "vitest",
     "lint": "oxlint src/",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "keywords": [
     "cloudflare",
@@ -46,7 +47,8 @@
     "hono": ">=4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250204.0",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/workers-types": "^5.20260727.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
