@@ -48,10 +48,7 @@ clawdwatch/
 │   ├── notify/
 │   │   ├── index.ts          Notifier interface + dispatch/batch/retry
 │   │   ├── slack.ts          Block Kit (ported from healthcheck worker)
-│   │   ├── webhook.ts        HMAC-signed generic POST
-│   │   ├── agent.ts          agent-inbox notifier (HTTP, service-token auth)
-│   │   ├── workers-ai.ts     inline triage via env.AI binding
-│   │   └── queue.ts          Cloudflare Queues handoff (durable)
+│   │   └── webhook.ts        signed POST; hmac or service-token auth
 │   ├── routes/               Hono API (status public; writes authenticated)
 │   └── dashboard/            new UI from design/dashboard-prototype.html
 ├── migrations/               D1 schema — ships WITH the library
@@ -88,11 +85,10 @@ const monitor = createMonitor<Env>({
   resolveUrl: (url, env) => url.replace('{{WORKER_URL}}', env.WORKER_URL),
 
   notifiers: [
-    slack({ webhook: '${SLACK_WEBHOOK_URL}', reminderEvery: '1h' }),
-    agent({ url: '${AGENT_INBOX_URL}',
-            auth: serviceToken('${CF_ACCESS_CLIENT_ID}', '${CF_ACCESS_CLIENT_SECRET}'),
-            on: ['opened', 'recovered'] }),
-    workersAi({ binding: (env) => env.AI, mode: 'annotate' }),
+    slack({ webhook: '${SLACK_WEBHOOK_URL}' }),
+    webhook({ url: '${AGENT_INBOX_URL}',
+              auth: serviceToken('${CF_ACCESS_CLIENT_ID}', '${CF_ACCESS_CLIENT_SECRET}'),
+              on: ['opened', 'recovered'] }),
   ],
 })
 
@@ -127,7 +123,8 @@ interface Notifier {
 ```
 
 Failures in one notifier never block others; each is wrapped, logged, and
-retried once. `queue()` exists for operators who need durable delivery.
+retried once, and every attempt produces a `DeliveryReport` — the observability
+whose absence let a broken v2 alert path go unnoticed for months.
 
 ---
 
@@ -158,30 +155,27 @@ filter). Multiple `slack()` instances allowed (e.g. #alerts + #status-page).
 
 ## 3. Agent hooks — pluggable, zero agent modification
 
-The design constraint: work with moltworker/OpenClaw **as deployed**, and with
-anything else that appears later. Three tiers, all config:
+The design constraint: work with any agent **as deployed**, and with whatever
+replaces it later. One mechanism, not three.
 
-### Tier 1 — `webhook()` / `agent()` (works with any agent, today)
-Signed HTTP POST of the `AlertEvent` to an inbox URL. For OpenClaw on
-moltworker that URL is the gateway's existing public surface behind CF Access,
-authenticated with a **service token**. HMAC signature (`x-clawdwatch-signature`,
-SHA-256 over timestamp+body) so any receiver can verify authenticity.
-No DO bindings, no `script_name` coupling, no knowledge of Sandbox internals —
-the v2 mistake (reaching into moltworker's Durable Object and silently
-dropping alerts when the container slept) is structurally impossible here.
+### `webhook()` — the whole agent story
+Signed HTTP POST of the `AlertEvent` to an inbox URL. An agent inbox is just a
+URL, so there is no separate `agent()` notifier — only an auth choice:
 
-### Tier 2 — `queue()` (durable delivery for sleepy agents)
-Push events to a Cloudflare Queue; the operator's own consumer (10 lines,
-their repo) wakes the agent and delivers. Solves "container asleep during the
-outage" without clawdwatch knowing what a Sandbox is. Retry/backoff/DLQ come
-free from Queues.
+- `hmac(secret)` — `x-clawdwatch-signature`, SHA-256 over timestamp+body, so
+  any receiver can verify authenticity and reject replays.
+- `serviceToken(id, secret)` — `CF-Access-Client-Id`/`-Secret` headers for an
+  inbox behind Cloudflare Access (§3b).
 
-### Tier 3 — `workersAi()` (no agent required)
-Inline triage on the `AI` binding: classify severity, correlate co-failing
-checks, write an annotation onto the incident (visible in the drawer), and
-optionally gate escalation ("suppress reminder, this matches a deploy
-window"). Cheap, stateless, runs in the same Worker. `mode: 'annotate' |
-'gate' | 'both'`.
+No DO bindings, no `script_name` coupling, no knowledge of container internals.
+The v2 mistake — reaching into a sibling Worker's Durable Object and silently
+dropping alerts when the container slept — is structurally impossible here.
+
+**Deferred, with reasons.** `queue()` solved "agent asleep during the outage",
+a moltworker-container problem; a Durable Object agent does not sleep through a
+POST. `workersAi()` inline triage duplicates the assistant's correlation job,
+and two systems doing triage is worse than one. Both are additive later if the
+need reappears — neither changes the AlertEvent contract.
 
 ### The agent's inbound half: self-describing
 Nothing is ever installed into the agent. Two mechanisms:
@@ -358,9 +352,15 @@ delivery/rendering end-to-end).
 parallel orchestrator, D1 stores, migrations). *Accept:* integration suite
 green in miniflare; property redaction test green.
 
-**M2 — Notifiers** (dispatch core, slack, webhook+HMAC, agent, queue,
-workers-ai). *Accept:* E2E smoke delivers signed events; notifier isolation
-proven by a deliberately-throwing notifier test.
+**M2 — Notifiers** (dispatch core, slack, webhook+HMAC). Scope deliberately
+trimmed: `agent()` collapses into `webhook({ auth: serviceToken(...) })` — an
+agent inbox is just a URL — and `queue()` / `workersAi()` are deferred.
+queue() solved "container asleep", a moltworker problem that no longer exists;
+workersAi() duplicates the assistant's correlation job. Slack is NOT deferred:
+routing alerts only through an agent reproduces the v2 failure (alerts vanished
+when the agent broke) and would gate M5 on the assistant being production-ready.
+*Accept:* E2E smoke delivers signed events; notifier isolation proven by a
+deliberately-throwing notifier test.
 
 **M3 — API + dashboard** (routes w/ authz, UI build-out from prototype,
 notifier status panel). *Accept:* authz matrix green; a11y checks from

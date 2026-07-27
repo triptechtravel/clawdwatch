@@ -16,6 +16,7 @@
 import { DEFAULTS, type ClawdWatchOptions, type Notifier, type SecretMap } from './types';
 import { runMonitoringChecks, type RunReport } from './engine/orchestrator';
 import { dispatch, type DeliveryReport } from './notify';
+import { slack } from './notify/slack';
 import { resolveTemplate } from './engine/secrets';
 
 export interface Monitor<TEnv> {
@@ -27,11 +28,20 @@ export interface Monitor<TEnv> {
 
 export function createMonitor<TEnv>(options: ClawdWatchOptions<TEnv>): Monitor<TEnv> {
   const defaults = { ...DEFAULTS, ...options.defaults };
-  const notifiers: Notifier<TEnv>[] = options.notifiers ?? [];
 
   async function runChecks(env: TEnv) {
     const secrets: SecretMap = options.secrets?.(env) ?? {};
     const resolve = (template: string) => resolveTemplate(template, secrets);
+
+    // Parity with the worker this replaces: a configured SLACK_WEBHOOK_URL is
+    // enough to get alerts, with no notifier wiring at all. Explicit
+    // `notifiers` always wins — this only fills an empty list.
+    const notifiers: Notifier<TEnv>[] =
+      options.notifiers && options.notifiers.length > 0
+        ? options.notifiers
+        : secrets.SLACK_WEBHOOK_URL
+          ? [slack<TEnv>({ webhook: '${SLACK_WEBHOOK_URL}' })]
+          : [];
 
     const report = await runMonitoringChecks({
       db: options.d1(env),
@@ -92,6 +102,19 @@ export type {
 
 export { DEFAULTS } from './types';
 export { dispatch, type DeliveryReport } from './notify';
+export { slack, buildPayload, formatDuration } from './notify/slack';
+export {
+  webhook,
+  hmac,
+  serviceToken,
+  combineAuth,
+  signPayload,
+  verifySignature,
+  SIGNATURE_HEADER,
+  TIMESTAMP_HEADER,
+  type WebhookAuth,
+  type WebhookOptions,
+} from './notify/webhook';
 export { runMonitoringChecks, isDue, type RunReport } from './engine/orchestrator';
 export { computeTransition, emptyState, type Transition } from './engine/transition';
 export { evaluateAssertions, resolveJsonPath } from './engine/assertions';
