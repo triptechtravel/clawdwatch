@@ -1,6 +1,6 @@
 {
   "name": "clawdwatch",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Synthetic monitoring for Cloudflare Workers — health checks, state machine alerts, and an embedded dashboard",
   "type": "module",
   "main": "dist/index.js",

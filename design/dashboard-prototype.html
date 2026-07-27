@@ -1,0 +1,1054 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>clawdwatch — checks</title>
+<style>
+/* ─────────────────────────────────────────────────────────────
+   Tokens
+   Neutrals carry a slight blue-slate bias — instrument, not paper.
+   Status hues are semantic and are the only saturated colour on
+   screen. The indigo accent is interaction only: focus, selection.
+   ───────────────────────────────────────────────────────────── */
+:root {
+  --bg:        #f6f7f9;
+  --surface:   #ffffff;
+  --surface-2: #f0f2f5;
+  --ink:       #0f1720;
+  --ink-2:     #3d4854;
+  --muted:     #5c6878;
+  --line:      #e3e7ec;
+  --line-2:    #cfd6de;
+
+  --ok:        #1f9d62;
+  --ok-bg:     #e6f4ed;
+  --warn:      #b77b0b;
+  --warn-bg:   #fbf1de;
+  --down:      #ce3b33;
+  --down-bg:   #fbeae9;
+  --idle:      #8a94a3;
+  --idle-bg:   #eef0f3;
+
+  --accent:    #4c5fd7;
+  --accent-bg: #eceffc;
+
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+
+  --r: 5px;
+  --shadow: 0 1px 2px rgba(15,23,32,.05), 0 4px 16px rgba(15,23,32,.05);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:        #0f141b;
+    --surface:   #171e28;
+    --surface-2: #1e2733;
+    --ink:       #e4e9f0;
+    --ink-2:     #b3bdca;
+    --muted:     #8b97a8;
+    --line:      #232c38;
+    --line-2:    #313d4c;
+
+    --ok:        #35c285;
+    --ok-bg:     #12291f;
+    --warn:      #e0a028;
+    --warn-bg:   #2b2213;
+    --down:      #f2635a;
+    --down-bg:   #2e1917;
+    --idle:      #6b7686;
+    --idle-bg:   #1f262f;
+
+    --accent:    #7c8cf0;
+    --accent-bg: #1a2035;
+
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+  }
+}
+
+/* The viewer's toggle stamps data-theme on :root and must win both ways. */
+:root[data-theme="light"] {
+  --bg:#f6f7f9; --surface:#fff; --surface-2:#f0f2f5;
+  --ink:#0f1720; --ink-2:#3d4854; --muted:#5c6878;
+  --line:#e3e7ec; --line-2:#cfd6de;
+  --ok:#1f9d62; --ok-bg:#e6f4ed; --warn:#b77b0b; --warn-bg:#fbf1de;
+  --down:#ce3b33; --down-bg:#fbeae9; --idle:#8a94a3; --idle-bg:#eef0f3;
+  --accent:#4c5fd7; --accent-bg:#eceffc;
+  --shadow:0 1px 2px rgba(15,23,32,.05), 0 4px 16px rgba(15,23,32,.05);
+}
+:root[data-theme="dark"] {
+  --bg:#0f141b; --surface:#171e28; --surface-2:#1e2733;
+  --ink:#e4e9f0; --ink-2:#b3bdca; --muted:#8b97a8;
+  --line:#232c38; --line-2:#313d4c;
+  --ok:#35c285; --ok-bg:#12291f; --warn:#e0a028; --warn-bg:#2b2213;
+  --down:#f2635a; --down-bg:#2e1917; --idle:#6b7686; --idle-bg:#1f262f;
+  --accent:#7c8cf0; --accent-bg:#1a2035;
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 4px 16px rgba(0,0,0,.25);
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ── Chrome ─────────────────────────────────────────────────── */
+
+.topbar {
+  position: sticky; top: 0; z-index: 30;
+  display: flex; align-items: center; gap: 20px;
+  padding: 0 20px; height: 52px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+.wordmark {
+  font-family: var(--mono);
+  font-size: 13px; font-weight: 600;
+  letter-spacing: .01em;
+  display: flex; align-items: center; gap: 8px;
+}
+.wordmark .pulse {
+  width: 7px; height: 7px; border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent);
+  animation: pulse 4s ease-out infinite;
+}
+@keyframes pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); }
+  40%  { box-shadow: 0 0 0 7px color-mix(in srgb, var(--ok) 0%, transparent); }
+  100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 0%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wordmark .pulse { animation: none; }
+}
+
+.topbar .spacer { margin-left: auto; }
+
+.lastrun {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.lastrun b { color: var(--ink-2); font-weight: 500; }
+
+.btn {
+  font-family: var(--sans);
+  font-size: 13px; font-weight: 500;
+  padding: 6px 12px;
+  border-radius: var(--r);
+  border: 1px solid var(--line-2);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+.btn:hover { background: var(--surface-2); }
+.btn-primary {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.btn-primary:hover { filter: brightness(1.08); background: var(--accent); }
+
+/* ── Summary ────────────────────────────────────────────────── */
+
+.wrap { max-width: 1320px; margin: 0 auto; padding: 20px; }
+
+.summary {
+  display: flex; align-items: center; gap: 28px;
+  flex-wrap: wrap;
+  padding: 16px 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  margin-bottom: 16px;
+}
+
+.verdict { display: flex; flex-direction: column; gap: 3px; min-width: 190px; }
+.verdict .headline {
+  font-size: 19px; font-weight: 600; letter-spacing: -.01em;
+  display: flex; align-items: center; gap: 9px;
+}
+.verdict .sub { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+
+.dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.dot.ok { background: var(--ok); }
+.dot.warn { background: var(--warn); }
+.dot.down { background: var(--down); }
+.dot.idle { background: var(--idle); }
+
+/* Fleet bar: proportion of the estate in each state, at a glance. */
+.fleet { flex: 1 1 260px; min-width: 220px; display: flex; flex-direction: column; gap: 7px; }
+.fleetbar {
+  display: flex; height: 8px; border-radius: 99px; overflow: hidden;
+  background: var(--surface-2);
+}
+.fleetbar span { display: block; }
+.fleetbar .s-ok { background: var(--ok); }
+.fleetbar .s-warn { background: var(--warn); }
+.fleetbar .s-down { background: var(--down); }
+.fleetbar .s-idle { background: var(--idle); }
+
+.legend { display: flex; gap: 16px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.legend i { font-style: normal; display: inline-flex; align-items: center; gap: 5px; }
+.legend b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.stat { display: flex; flex-direction: column; gap: 2px; }
+.stat .k {
+  font-family: var(--mono); font-size: 10px; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--muted);
+}
+.stat .v {
+  font-family: var(--mono); font-size: 18px; font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Toolbar ────────────────────────────────────────────────── */
+
+.toolbar {
+  display: flex; align-items: center; gap: 10px;
+  flex-wrap: wrap; margin-bottom: 12px;
+}
+
+.search {
+  font-family: var(--mono); font-size: 12.5px;
+  padding: 7px 11px; min-width: 240px; flex: 0 1 300px;
+  border: 1px solid var(--line-2); border-radius: var(--r);
+  background: var(--surface); color: var(--ink);
+}
+.search::placeholder { color: var(--muted); }
+
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip {
+  font-family: var(--mono); font-size: 11.5px;
+  padding: 5px 10px; border-radius: 99px;
+  border: 1px solid var(--line-2); background: var(--surface);
+  color: var(--ink-2); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.chip:hover { border-color: var(--muted); }
+.chip[aria-pressed="true"] {
+  background: var(--accent-bg); border-color: var(--accent); color: var(--accent);
+}
+/* Pressed status chips stay in their own semantic hue — no indigo ring
+   around an amber dot. Tag chips keep the accent. */
+.chip[data-status="ok"][aria-pressed="true"]   { background: var(--ok-bg);   border-color: var(--ok);   color: var(--ok); }
+.chip[data-status="warn"][aria-pressed="true"] { background: var(--warn-bg); border-color: var(--warn); color: var(--warn); }
+.chip[data-status="down"][aria-pressed="true"] { background: var(--down-bg); border-color: var(--down); color: var(--down); }
+.chip.clear { border-style: dashed; color: var(--muted); }
+.chip.clear:hover { color: var(--ink); }
+.chip.clear[hidden] { display: none; } /* .chip's display beats the UA [hidden] rule */
+.chip .n { font-variant-numeric: tabular-nums; opacity: .75; }
+
+/* ── Table ──────────────────────────────────────────────────── */
+
+.tablewrap {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  box-shadow: var(--shadow);
+  overflow-x: auto;
+}
+
+table { border-collapse: collapse; width: 100%; min-width: 900px; }
+
+thead th {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
+  text-align: left; padding: 9px 14px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  background: var(--surface);
+  /* Sticky offset is relative to the scrolling .tablewrap, not the page —
+     any offset > 0 parks the header on top of the first row. */
+  position: sticky; top: 0; z-index: 10;
+}
+thead th.num { text-align: right; }
+
+tbody tr { border-bottom: 1px solid var(--line); cursor: pointer; }
+tbody tr:last-child { border-bottom: 0; }
+tbody tr:hover { background: var(--surface-2); }
+tbody tr[aria-selected="true"] { background: var(--accent-bg); }
+
+tbody td { padding: 11px 14px; vertical-align: middle; }
+
+/* Severity stripe — state readable by position, not colour alone. */
+td.sev {
+  width: 3px; padding: 0;
+  border-left: 3px solid transparent;
+}
+tr.st-ok   td.sev { border-left-color: var(--ok); }
+tr.st-warn td.sev { border-left-color: var(--warn); }
+tr.st-down td.sev { border-left-color: var(--down); }
+tr.st-idle td.sev { border-left-color: var(--idle); }
+
+.name { font-weight: 500; font-size: 13.5px; letter-spacing: -.005em; }
+.url {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 340px; display: block; margin-top: 2px;
+}
+
+.pill {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 600;
+  letter-spacing: .05em; text-transform: uppercase;
+  padding: 3px 8px; border-radius: 99px; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.pill.ok   { background: var(--ok-bg);   color: var(--ok); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.pill.down { background: var(--down-bg); color: var(--down); }
+.pill.idle { background: var(--idle-bg); color: var(--muted); }
+
+.num, .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+td.num { text-align: right; font-size: 12.5px; white-space: nowrap; }
+td.num .weak { color: var(--muted); }
+
+/* ── Signature: the tick strip ──────────────────────────────────
+   One mark per check run. Colour = status, height = latency
+   against that check's own ceiling. Discrete, because a 5-minute
+   cron produces discrete samples — a smooth line would lie.
+   ───────────────────────────────────────────────────────────── */
+.ticks {
+  display: flex; align-items: flex-end; gap: 1px;
+  height: 26px; min-width: 200px;
+}
+.ticks i {
+  display: block; flex: 1 1 auto; min-width: 2px;
+  border-radius: 1px; font-style: normal;
+  transition: opacity .12s ease;
+}
+.ticks:hover i { opacity: .22; }
+.ticks i:hover { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .ticks i { transition: none; }
+}
+/* Healthy is the norm, so it whispers — amber and red carry the page. */
+.ticks i.ok   { background: var(--ok); opacity: .35; }
+.ticks i.warn { background: var(--warn); }
+.ticks i.down { background: var(--down); }
+.ticks i.idle { background: var(--idle); opacity: .3; }
+.ticks i.sel  { opacity: 1; box-shadow: 0 0 0 1.5px var(--accent); }
+
+.tickscale {
+  font-family: var(--mono); font-size: 9.5px; color: var(--muted);
+  display: flex; justify-content: space-between; margin-top: 3px;
+  letter-spacing: .03em;
+}
+
+/* Shared tooltip — one element, repositioned. Inverted ground so it
+   reads on both themes. pointer-events: none keeps hover stable. */
+.tip {
+  position: fixed; z-index: 60; pointer-events: none;
+  background: var(--ink); color: var(--bg);
+  font-family: var(--mono); font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  padding: 4px 8px; border-radius: 4px; white-space: nowrap;
+  transform: translate(-50%, calc(-100% - 6px));
+  opacity: 0; transition: opacity .1s ease;
+}
+.tip.show { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .tip { transition: none; } }
+
+/* Rows ease in on filter changes. */
+tbody tr { animation: rowin .18s ease both; }
+@keyframes rowin { from { opacity: 0; transform: translateY(2px); } }
+@media (prefers-reduced-motion: reduce) { tbody tr { animation: none; } }
+
+.sr {
+  position: absolute; width: 1px; height: 1px; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+}
+
+/* ── Detail drawer ──────────────────────────────────────────── */
+
+.scrim {
+  position: fixed; inset: 0; z-index: 40;
+  background: rgba(15,23,32,.32);
+  opacity: 0; pointer-events: none; transition: opacity .18s ease;
+}
+.scrim.open { opacity: 1; pointer-events: auto; }
+
+.drawer {
+  position: fixed; top: 0; right: 0; bottom: 0; z-index: 50;
+  width: min(520px, 100vw);
+  background: var(--surface);
+  border-left: 1px solid var(--line);
+  transform: translateX(100%);
+  transition: transform .22s cubic-bezier(.32,.72,0,1);
+  display: flex; flex-direction: column;
+  box-shadow: -8px 0 32px rgba(15,23,32,.12);
+}
+.drawer.open { transform: translateX(0); }
+@media (prefers-reduced-motion: reduce) {
+  .drawer, .scrim { transition: none; }
+}
+
+.drawer header {
+  padding: 16px 20px; border-bottom: 1px solid var(--line);
+  display: flex; align-items: flex-start; gap: 12px;
+}
+.drawer header .t { flex: 1; min-width: 0; }
+.drawer header h2 { margin: 0 0 3px; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+.drawer header .u {
+  font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+  word-break: break-all;
+}
+.iconbtn {
+  border: 1px solid var(--line-2); background: var(--surface);
+  color: var(--muted); border-radius: var(--r);
+  width: 28px; height: 28px; cursor: pointer; flex: none;
+  font-size: 15px; line-height: 1; display: grid; place-items: center;
+}
+.iconbtn:hover { background: var(--surface-2); color: var(--ink); }
+
+.drawer .body { overflow-y: auto; padding: 4px 20px 24px; }
+
+.sec { padding: 16px 0; border-bottom: 1px solid var(--line); }
+.sec:last-child { border-bottom: 0; }
+.sec > h3 {
+  margin: 0 0 10px;
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: .07em; text-transform: uppercase; color: var(--muted);
+}
+
+.kv { display: grid; grid-template-columns: 108px 1fr; gap: 7px 14px; }
+.kv dt { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+.kv dd {
+  margin: 0; font-family: var(--mono); font-size: 12px;
+  font-variant-numeric: tabular-nums; word-break: break-word;
+}
+
+.assert {
+  display: flex; align-items: center; gap: 9px;
+  padding: 7px 10px; border-radius: var(--r);
+  background: var(--surface-2);
+  font-family: var(--mono); font-size: 11.5px;
+  margin-bottom: 5px;
+}
+.assert .mark { font-weight: 700; flex: none; }
+.assert.pass .mark { color: var(--ok); }
+.assert.fail .mark { color: var(--down); }
+.assert .txt { color: var(--ink-2); }
+.assert .txt em { font-style: normal; color: var(--ink); font-weight: 600; }
+
+.inc { display: flex; gap: 10px; padding: 8px 0; border-bottom: 1px dashed var(--line); }
+.inc:last-child { border-bottom: 0; }
+.inc .when { font-family: var(--mono); font-size: 11px; color: var(--muted); white-space: nowrap; }
+.inc .what { font-size: 12.5px; }
+.inc .what .dur { font-family: var(--mono); color: var(--muted); font-size: 11px; }
+
+/* Notification routing — the pluggable bit, surfaced as plain rows. */
+.route {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 11px; border: 1px solid var(--line);
+  border-radius: var(--r); margin-bottom: 6px;
+  background: var(--surface);
+}
+.route .ic {
+  width: 26px; height: 26px; border-radius: var(--r); flex: none;
+  display: grid; place-items: center;
+  background: var(--surface-2);
+  font-family: var(--mono); font-size: 11px; font-weight: 700; color: var(--ink-2);
+}
+.route .rt { flex: 1; min-width: 0; }
+.route .rt .n { font-size: 12.5px; font-weight: 500; }
+.route .rt .d { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+
+/* Switch */
+.sw {
+  position: relative; width: 32px; height: 18px; flex: none;
+  border-radius: 99px; border: 0; cursor: pointer;
+  background: var(--line-2); transition: background .15s ease;
+}
+.sw::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 14px; height: 14px; border-radius: 50%;
+  background: #fff; transition: transform .15s ease;
+}
+.sw[aria-checked="true"] { background: var(--ok); }
+.sw[aria-checked="true"]::after { transform: translateX(14px); }
+@media (prefers-reduced-motion: reduce) { .sw, .sw::after { transition: none; } }
+
+.hint {
+  font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  line-height: 1.5; margin-top: 8px;
+}
+.hint code {
+  background: var(--surface-2); padding: 1px 4px; border-radius: 3px; color: var(--ink-2);
+}
+
+.empty {
+  padding: 44px 20px; text-align: center; color: var(--muted);
+  font-family: var(--mono); font-size: 12.5px;
+}
+
+@media (max-width: 720px) {
+  .wrap { padding: 14px; }
+  .summary { gap: 18px; padding: 14px; }
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="wordmark"><span class="pulse" aria-hidden="true"></span>clawdwatch</div>
+  <div class="spacer"></div>
+  <div class="lastrun">last run <b id="lastRun">—</b> · every <b>5m</b></div>
+  <button class="btn" type="button" id="runAll">Run all now</button>
+  <button class="btn btn-primary" type="button">Add check</button>
+</div>
+
+<div class="wrap">
+
+  <section class="summary" aria-label="Fleet summary">
+    <div class="verdict">
+      <div class="headline"><span class="dot down" id="vDot"></span><span id="vText">1 check down</span></div>
+      <div class="sub" id="vSub">CamperMate Business · down 18m</div>
+    </div>
+
+    <div class="fleet">
+      <div class="fleetbar" id="fleetBar" role="img" aria-label="Estate health"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="stat">
+      <span class="k">Uptime 24h</span>
+      <span class="v" id="sUptime">99.4%</span>
+    </div>
+    <div class="stat">
+      <span class="k">p95 latency</span>
+      <span class="v" id="sP95">412<span style="font-size:11px;color:var(--muted)">ms</span></span>
+    </div>
+    <div class="stat">
+      <span class="k">Open incidents</span>
+      <span class="v" id="sInc">1</span>
+    </div>
+  </section>
+
+  <div class="toolbar">
+    <input class="search" id="search" type="search" placeholder="Filter by name, URL or tag" aria-label="Filter checks">
+    <div class="chips" id="statusChips" role="group" aria-label="Filter by status"></div>
+    <div class="chips" id="tagChips" role="group" aria-label="Filter by tag"></div>
+    <button class="chip clear" type="button" id="clearFilters" hidden>Clear filters</button>
+  </div>
+  <div class="sr" aria-live="polite" id="live"></div>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th class="sev" aria-label="Severity"></th>
+          <th>Check</th>
+          <th>Status</th>
+          <th style="min-width:220px">Last 6 hours</th>
+          <th class="num">Uptime 24h</th>
+          <th class="num">Latency</th>
+          <th class="num">Last run</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="empty" id="empty" hidden>No checks match that filter.</div>
+  </div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+
+<aside class="drawer" id="drawer" aria-hidden="true" aria-label="Check detail">
+  <header>
+    <div class="t">
+      <h2 id="dName">—</h2>
+      <div class="u" id="dUrl">—</div>
+    </div>
+    <button class="iconbtn" type="button" id="dClose" aria-label="Close detail">✕</button>
+  </header>
+  <div class="body" id="dBody"></div>
+</aside>
+
+<script>
+"use strict";
+
+/* Deterministic PRNG so the mock reads the same on every load. */
+function rng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+
+/* Real endpoints, lifted from the healthcheck worker this replaces. */
+const CHECKS = [
+  { id:"campermate-home", name:"CamperMate Homepage", url:"https://campermate.com/en",
+    tags:["core","web"], method:"GET", base:180, seed:11, state:"ok",
+    asserts:[["pass","status is <em>200</em>"],["pass","response time under <em>3000ms</em>"]] },
+
+  { id:"graphql-api", name:"GraphQL API", url:"https://campermate.com/graphql/server",
+    tags:["core","api"], method:"POST", base:240, seed:23, state:"ok",
+    asserts:[["pass","status is <em>200</em>"],["pass","<em>$.data.__typename</em> is not empty"]] },
+
+  { id:"strapi-admin", name:"Strapi CMS Admin", url:"https://cms.campermate.com/admin",
+    tags:["cms"], method:"GET", base:420, seed:31, state:"ok",
+    asserts:[["pass","status is <em>200</em>"]] },
+
+  { id:"strapi-health", name:"Strapi API Health", url:"https://cms.campermate.com/_health",
+    tags:["cms"], method:"GET", base:95, seed:41, state:"ok",
+    asserts:[["pass","status is <em>204</em>"]] },
+
+  { id:"poll-api", name:"Poll API", url:"https://business.geozone.co.nz/appserver/poll.php",
+    tags:["legacy","api"], method:"POST", base:680, seed:53, state:"warn",
+    asserts:[["pass","status is <em>200</em>"],["fail","response time under <em>1500ms</em> — got <em>2140ms</em>"]] },
+
+  { id:"sequin-health", name:"Sequin Health", url:"https://sequin.campermate.com/health",
+    tags:["data"], method:"GET", base:130, seed:67, state:"ok",
+    asserts:[["pass","status is <em>200</em>"]] },
+
+  { id:"typesense-proxy", name:"Typesense Proxy Health", url:"https://privatesearch.campermate.com/health",
+    tags:["data","search"], method:"GET", base:150, seed:71, state:"ok",
+    asserts:[["pass","status is <em>200</em>"]] },
+
+  { id:"business-login", name:"CamperMate Business", url:"https://business.campermate.com/auth/login",
+    tags:["apps"], method:"GET", base:310, seed:83, state:"down",
+    asserts:[["fail","status is <em>200</em> — got <em>502</em>"]] },
+
+  { id:"agent-chat", name:"Agent Chat", url:"https://agent.campermate.com/agents/chat/datadog-healthcheck/get-messages",
+    tags:["apps","agent"], method:"GET", base:270, seed:97, state:"ok",
+    asserts:[["pass","status is <em>200</em>"]] },
+
+  { id:"image-cdn", name:"Image CDN", url:"https://images.campermate.com/photos/0f677ebb.jpeg?width=100&height=100",
+    tags:["cdn"], method:"GET", base:88, seed:101, state:"ok",
+    asserts:[["pass","status is <em>200</em>"],["pass","header <em>content-type</em> contains <em>image</em>"]] },
+];
+
+const SAMPLES = 72;          // 6 hours at one sample per 5 minutes
+const INTERVAL_MS = 5 * 60 * 1000;
+
+/* Build a plausible sample series per check. Failures cluster, because
+   real outages do — scattered single failures would misrepresent them. */
+function series(check) {
+  const rand = rng(check.seed);
+  const out = [];
+  let failFrom = Infinity, failTo = -1;
+
+  if (check.state === "down") { failFrom = SAMPLES - 4; failTo = SAMPLES; }
+  else if (check.state === "warn") { failFrom = SAMPLES - 3; failTo = SAMPLES - 2; }
+  else if (rand() > 0.62) {
+    failFrom = Math.floor(rand() * (SAMPLES - 20)) + 6;
+    failTo = failFrom + 1 + Math.floor(rand() * 2);
+  }
+
+  for (let i = 0; i < SAMPLES; i++) {
+    const jitter = 0.72 + rand() * 0.8;
+    let ms = Math.round(check.base * jitter);
+    let status = "ok";
+
+    if (i >= failFrom && i < failTo) {
+      status = check.state === "warn" ? "warn" : "down";
+      ms = check.state === "warn" ? Math.round(check.base * 3.1) : 0;
+    } else if (rand() > 0.965) {
+      status = "warn";
+      ms = Math.round(check.base * 2.4);
+    }
+    out.push({ ms, status, t: Date.now() - (SAMPLES - 1 - i) * INTERVAL_MS });
+  }
+  return out;
+}
+
+const DATA = CHECKS.map(c => {
+  const s = series(c);
+  const okCount = s.filter(x => x.status === "ok").length;
+  const oks = s.filter(x => x.status !== "down").map(x => x.ms).sort((a,b) => a - b);
+  return {
+    ...c,
+    samples: s,
+    last: s[s.length - 1],
+    uptime: (okCount / s.length) * 100,
+    p95: oks.length ? oks[Math.floor(oks.length * 0.95)] : 0,
+    ceiling: Math.max(...s.map(x => x.ms), 1),
+  };
+});
+
+const LABEL = { ok:"Healthy", warn:"Degraded", down:"Down", idle:"Unknown" };
+
+/* The open incident's start time is fixed; the duration ticks live. */
+const DOWN_SINCE = Date.now() - 18 * 60000;
+function downFor() {
+  const m = Math.max(1, Math.round((Date.now() - DOWN_SINCE) / 60000));
+  return m < 60 ? m + "m" : Math.floor(m / 60) + "h " + (m % 60) + "m";
+}
+
+function fmtAgo(ts) {
+  const m = Math.round((Date.now() - ts) / 60000);
+  if (m < 1) return "just now";
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(m / 60);
+  return h + "h " + (m % 60) + "m ago";
+}
+function fmtClock(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/* ── Render ─────────────────────────────────────────────────── */
+
+const els = {
+  rows: document.getElementById("rows"),
+  empty: document.getElementById("empty"),
+  search: document.getElementById("search"),
+  statusChips: document.getElementById("statusChips"),
+  tagChips: document.getElementById("tagChips"),
+  fleetBar: document.getElementById("fleetBar"),
+  legend: document.getElementById("legend"),
+};
+
+const filters = { q: "", status: new Set(), tags: new Set() };
+
+function counts() {
+  const c = { ok:0, warn:0, down:0, idle:0 };
+  DATA.forEach(d => { c[d.state]++; });
+  return c;
+}
+
+function renderSummary() {
+  const c = counts();
+  const total = DATA.length;
+
+  els.fleetBar.innerHTML = "";
+  ["ok","warn","down","idle"].forEach(k => {
+    if (!c[k]) return;
+    const s = document.createElement("span");
+    s.className = "s-" + k;
+    s.style.width = (c[k] / total * 100) + "%";
+    els.fleetBar.appendChild(s);
+  });
+
+  els.legend.innerHTML = ["ok","warn","down"].map(k =>
+    `<i><span class="dot ${k}"></span>${LABEL[k]} <b>${c[k]}</b></i>`
+  ).join("");
+
+  const down = DATA.find(d => d.state === "down");
+  document.getElementById("vDot").className = "dot " + (down ? "down" : c.warn ? "warn" : "ok");
+  document.getElementById("vText").textContent = down
+    ? (c.down === 1 ? "1 check down" : c.down + " checks down")
+    : c.warn ? c.warn + " checks degraded" : "All checks healthy";
+  document.getElementById("vSub").textContent = down
+    ? down.name + " · down " + downFor()
+    : "Across " + total + " checks";
+
+  const avgUp = DATA.reduce((a, d) => a + d.uptime, 0) / total;
+  document.getElementById("sUptime").textContent = avgUp.toFixed(1) + "%";
+  const p95 = Math.round(DATA.reduce((a, d) => a + d.p95, 0) / total);
+  document.getElementById("sP95").innerHTML = p95 + '<span style="font-size:11px;color:var(--muted)">ms</span>';
+  document.getElementById("sInc").textContent = String(c.down);
+  document.getElementById("lastRun").textContent = fmtClock(Date.now());
+}
+
+function renderChips() {
+  const c = counts();
+  els.statusChips.innerHTML = ["ok","warn","down"].map(k =>
+    `<button class="chip" type="button" data-status="${k}" aria-pressed="${filters.status.has(k)}">
+       <span class="dot ${k}"></span>${LABEL[k]}<span class="n">${c[k]}</span>
+     </button>`
+  ).join("");
+
+  const tags = [...new Set(DATA.flatMap(d => d.tags))].sort();
+  els.tagChips.innerHTML = tags.map(t =>
+    `<button class="chip" type="button" data-tag="${t}" aria-pressed="${filters.tags.has(t)}">${t}</button>`
+  ).join("");
+}
+
+function ticksHTML(d) {
+  return d.samples.map(s => {
+    const h = s.status === "down" ? 100 : Math.max(14, (s.ms / d.ceiling) * 100);
+    return `<i class="${s.status}" style="height:${h}%" data-ms="${s.ms}" data-t="${s.t}"></i>`;
+  }).join("");
+}
+
+function visible() {
+  return DATA.filter(d => {
+    if (filters.status.size && !filters.status.has(d.state)) return false;
+    if (filters.tags.size && !d.tags.some(t => filters.tags.has(t))) return false;
+    if (filters.q) {
+      const hay = (d.name + " " + d.url + " " + d.tags.join(" ")).toLowerCase();
+      if (!hay.includes(filters.q)) return false;
+    }
+    return true;
+  });
+}
+
+function renderRows() {
+  const list = visible();
+  els.empty.hidden = list.length > 0;
+  document.getElementById("clearFilters").hidden =
+    !(filters.q || filters.status.size || filters.tags.size);
+
+  els.rows.innerHTML = list.map(d => `
+    <tr class="st-${d.state}" data-id="${d.id}" tabindex="0" aria-selected="false">
+      <td class="sev"></td>
+      <td>
+        <div class="name">${d.name}</div>
+        <span class="url">${d.method} ${d.url}</span>
+      </td>
+      <td><span class="pill ${d.state}">${LABEL[d.state]}</span></td>
+      <td>
+        <div class="ticks" tabindex="0" role="img"
+             aria-label="${d.name}: last 6 hours, one mark per run. Arrow keys inspect samples.">${ticksHTML(d)}</div>
+        <div class="tickscale"><span>6h ago</span><span>now</span></div>
+      </td>
+      <td class="num">${d.uptime.toFixed(1)}<span class="weak">%</span></td>
+      <td class="num">${d.last.status === "down" ? '<span class="weak">—</span>' : d.last.ms + '<span class="weak">ms</span>'}</td>
+      <td class="num"><span class="weak">${fmtAgo(d.last.t)}</span></td>
+    </tr>
+  `).join("");
+}
+
+/* ── Drawer ─────────────────────────────────────────────────── */
+
+const drawer = document.getElementById("drawer");
+const scrim = document.getElementById("scrim");
+let lastFocus = null;
+
+function openDrawer(id) {
+  const d = DATA.find(x => x.id === id);
+  if (!d) return;
+  lastFocus = document.activeElement;
+
+  document.getElementById("dName").textContent = d.name;
+  document.getElementById("dUrl").textContent = d.method + " " + d.url;
+
+  const incidents = d.state === "down"
+    ? [["today " + fmtClock(DOWN_SINCE), "Down — <span class='dur'>ongoing, " + downFor() + "</span>"],
+       ["3 days ago", "Down — <span class='dur'>resolved after 6m</span>"]]
+    : d.state === "warn"
+    ? [["today " + fmtClock(Date.now() - 10 * 60000), "Degraded — <span class='dur'>ongoing</span>"]]
+    : [["11 days ago", "Down — <span class='dur'>resolved after 2m</span>"]];
+
+  document.getElementById("dBody").innerHTML = `
+    <div class="sec">
+      <h3>Current</h3>
+      <dl class="kv">
+        <dt>Status</dt><dd><span class="pill ${d.state}">${LABEL[d.state]}</span></dd>
+        <dt>Last run</dt><dd>${fmtClock(d.last.t)} · ${fmtAgo(d.last.t)}</dd>
+        <dt>Latency</dt><dd>${d.last.status === "down" ? "—" : d.last.ms + "ms"}</dd>
+        <dt>Uptime 24h</dt><dd>${d.uptime.toFixed(2)}%</dd>
+        <dt>p95</dt><dd>${d.p95}ms</dd>
+        <dt>Tags</dt><dd>${d.tags.join(", ")}</dd>
+      </dl>
+    </div>
+
+    <div class="sec">
+      <h3>Assertions</h3>
+      ${d.asserts.map(([r, t]) =>
+        `<div class="assert ${r}"><span class="mark">${r === "pass" ? "✓" : "✕"}</span><span class="txt">${t}</span></div>`
+      ).join("")}
+    </div>
+
+    <div class="sec">
+      <h3>Recent incidents</h3>
+      ${incidents.map(([w, t]) =>
+        `<div class="inc"><span class="when">${w}</span><span class="what">${t}</span></div>`
+      ).join("")}
+    </div>
+
+    <div class="sec">
+      <h3>Notifications</h3>
+      <div class="route">
+        <span class="ic">SL</span>
+        <span class="rt"><span class="n">Slack — #alerts</span><span class="d">on failure · on recovery · hourly reminder</span></span>
+        <button class="sw" type="button" role="switch" aria-checked="true" aria-label="Notify Slack"></button>
+      </div>
+      <div class="route">
+        <span class="ic">AG</span>
+        <span class="rt"><span class="n">Agent — moltworker</span><span class="d">on failure · triage and decide</span></span>
+        <button class="sw" type="button" role="switch" aria-checked="true" aria-label="Notify agent"></button>
+      </div>
+      <div class="route">
+        <span class="ic">WH</span>
+        <span class="rt"><span class="n">Webhook — signed POST</span><span class="d">not configured</span></span>
+        <button class="sw" type="button" role="switch" aria-checked="false" aria-label="Notify webhook"></button>
+      </div>
+      <p class="hint">
+        Agents receive the full alert payload and can act on it. Any transport that
+        implements <code>notify(event, env)</code> can be plugged in here.
+      </p>
+    </div>
+
+    <div class="sec">
+      <h3>Secrets in this check</h3>
+      <dl class="kv">
+        <dt>Header</dt><dd>X-Healthcheck-Secret: <span style="color:var(--muted)">\${HEALTHCHECK_SECRET}</span></dd>
+        <dt>Header</dt><dd>x-e2e-bypass: <span style="color:var(--muted)">\${E2E_BYPASS_SECRET}</span></dd>
+      </dl>
+      <p class="hint">Stored by reference. Values resolve from Worker secrets at run time and never touch the database.</p>
+    </div>
+  `;
+
+  drawer.classList.add("open");
+  drawer.setAttribute("aria-hidden", "false");
+  scrim.classList.add("open");
+  document.getElementById("dClose").focus();
+
+  els.rows.querySelectorAll("tr").forEach(tr =>
+    tr.setAttribute("aria-selected", String(tr.dataset.id === id)));
+}
+
+function closeDrawer() {
+  drawer.classList.remove("open");
+  drawer.setAttribute("aria-hidden", "true");
+  scrim.classList.remove("open");
+  els.rows.querySelectorAll("tr").forEach(tr => tr.setAttribute("aria-selected", "false"));
+  if (lastFocus) lastFocus.focus();
+}
+
+/* ── Tick tooltip: one shared element, mouse and keyboard ───── */
+
+const tip = document.createElement("div");
+tip.className = "tip";
+document.body.appendChild(tip);
+const live = document.getElementById("live");
+
+function tipText(el) {
+  const when = fmtClock(+el.dataset.t);
+  if (el.classList.contains("down")) return when + " · failed";
+  if (el.classList.contains("warn")) return when + " · degraded · " + el.dataset.ms + "ms";
+  return when + " · " + el.dataset.ms + "ms";
+}
+function showTip(el) {
+  const r = el.getBoundingClientRect();
+  tip.textContent = tipText(el);
+  tip.style.left = (r.left + r.width / 2) + "px";
+  tip.style.top = r.top + "px";
+  tip.classList.add("show");
+}
+function hideTip() { tip.classList.remove("show"); }
+
+els.rows.addEventListener("mouseover", e => {
+  const i = e.target.closest(".ticks i");
+  if (i) showTip(i);
+});
+els.rows.addEventListener("mouseout", e => {
+  if (e.target.closest(".ticks")) hideTip();
+});
+
+function clearSel(strip) {
+  strip.querySelectorAll("i.sel").forEach(i => i.classList.remove("sel"));
+  delete strip.dataset.sel;
+}
+
+els.rows.addEventListener("focusout", e => {
+  const strip = e.target.closest?.(".ticks");
+  if (strip) { clearSel(strip); hideTip(); }
+});
+
+/* ── Events ─────────────────────────────────────────────────── */
+
+els.rows.addEventListener("click", e => {
+  const tr = e.target.closest("tr");
+  if (tr) openDrawer(tr.dataset.id);
+});
+els.rows.addEventListener("keydown", e => {
+  const strip = e.target.closest(".ticks");
+  if (strip && (e.key === "ArrowLeft" || e.key === "ArrowRight")) {
+    e.preventDefault();
+    e.stopPropagation();
+    const ticks = strip.children;
+    let i = strip.dataset.sel !== undefined ? +strip.dataset.sel : ticks.length - 1;
+    i = Math.max(0, Math.min(ticks.length - 1,
+      i + (e.key === "ArrowRight" ? 1 : -1) + (strip.dataset.sel === undefined ? 1 : 0)));
+    clearSel(strip);
+    strip.dataset.sel = i;
+    ticks[i].classList.add("sel");
+    showTip(ticks[i]);
+    live.textContent = tipText(ticks[i]);
+    return;
+  }
+  if (e.key === "Enter" || e.key === " ") {
+    const tr = e.target.closest("tr");
+    if (tr) { e.preventDefault(); openDrawer(tr.dataset.id); }
+  }
+});
+
+/* Keep focus inside the drawer while it's open. */
+drawer.addEventListener("keydown", e => {
+  if (e.key !== "Tab" || !drawer.classList.contains("open")) return;
+  const f = drawer.querySelectorAll("button, [href], [tabindex='0']");
+  if (!f.length) return;
+  const first = f[0], last = f[f.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+});
+
+document.getElementById("clearFilters").addEventListener("click", () => {
+  filters.q = "";
+  filters.status.clear();
+  filters.tags.clear();
+  els.search.value = "";
+  renderChips();
+  renderRows();
+});
+
+document.getElementById("dClose").addEventListener("click", closeDrawer);
+scrim.addEventListener("click", closeDrawer);
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
+
+document.body.addEventListener("click", e => {
+  const sw = e.target.closest(".sw");
+  if (sw) sw.setAttribute("aria-checked", sw.getAttribute("aria-checked") === "true" ? "false" : "true");
+});
+
+els.search.addEventListener("input", e => {
+  filters.q = e.target.value.trim().toLowerCase();
+  renderRows();
+});
+
+els.statusChips.addEventListener("click", e => {
+  const b = e.target.closest("[data-status]");
+  if (!b) return;
+  const k = b.dataset.status;
+  filters.status.has(k) ? filters.status.delete(k) : filters.status.add(k);
+  renderChips(); renderRows();
+});
+
+els.tagChips.addEventListener("click", e => {
+  const b = e.target.closest("[data-tag]");
+  if (!b) return;
+  const t = b.dataset.tag;
+  filters.tags.has(t) ? filters.tags.delete(t) : filters.tags.add(t);
+  renderChips(); renderRows();
+});
+
+document.getElementById("runAll").addEventListener("click", e => {
+  const b = e.target;
+  b.textContent = "Running…";
+  b.disabled = true;
+  setTimeout(() => {
+    document.getElementById("lastRun").textContent = fmtClock(Date.now());
+    b.textContent = "Run all now";
+    b.disabled = false;
+  }, 900);
+});
+
+renderSummary();
+renderChips();
+renderRows();
+
+/* The open incident's "down Nm" ticks up without a reload. */
+setInterval(() => {
+  const down = DATA.find(d => d.state === "down");
+  if (down) document.getElementById("vSub").textContent = down.name + " · down " + downFor();
+}, 30_000);
+</script>
+</body>
+</html>
