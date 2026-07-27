@@ -63,6 +63,11 @@ export interface WebhookOptions {
   now?: () => number;
 }
 
+/** TextEncoder returns ArrayBufferLike-backed bytes, which BufferSource rejects. */
+function utf8(text: string): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(text) as Uint8Array<ArrayBuffer>;
+}
+
 function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
@@ -75,7 +80,7 @@ export async function signPayload(
 ): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
-    new TextEncoder().encode(secret),
+    utf8(secret),
     { name: 'HMAC', hash: 'SHA-256' },
     false,
     ['sign'],
@@ -83,7 +88,7 @@ export async function signPayload(
   const signature = await crypto.subtle.sign(
     'HMAC',
     key,
-    new TextEncoder().encode(`${timestamp}.${body}`),
+    utf8(`${timestamp}.${body}`),
   );
   return `sha256=${toHex(signature)}`;
 }

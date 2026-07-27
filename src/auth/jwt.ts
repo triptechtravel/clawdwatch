@@ -56,12 +56,23 @@ interface JwtPayload {
   [key: string]: unknown;
 }
 
-function base64UrlDecode(input: string): Uint8Array {
+/**
+ * Returns a Uint8Array explicitly backed by an ArrayBuffer, not the default
+ * ArrayBufferLike. WebCrypto's BufferSource excludes SharedArrayBuffer, so the
+ * wider default fails to typecheck in consumers with stricter lib settings
+ * even though it works at run time.
+ */
+function base64UrlDecode(input: string): Uint8Array<ArrayBuffer> {
   const padded = input.replace(/-/g, '+').replace(/_/g, '/');
   const binary = atob(padded.padEnd(padded.length + ((4 - (padded.length % 4)) % 4), '='));
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
   return bytes;
+}
+
+/** TextEncoder returns ArrayBufferLike-backed bytes, which BufferSource rejects. */
+function utf8(text: string): Uint8Array<ArrayBuffer> {
+  return new TextEncoder().encode(text) as Uint8Array<ArrayBuffer>;
 }
 
 function decodeJson<T>(segment: string): T {
@@ -97,7 +108,11 @@ export function clearJwksCache(): void {
   jwksCache.clear();
 }
 
-async function verifySignature(jwk: Jwk, signed: string, signature: Uint8Array): Promise<boolean> {
+async function verifySignature(
+  jwk: Jwk,
+  signed: string,
+  signature: Uint8Array<ArrayBuffer>,
+): Promise<boolean> {
   const key = await crypto.subtle.importKey(
     'jwk',
     { kty: jwk.kty, n: jwk.n, e: jwk.e, alg: 'RS256', ext: true },
@@ -109,7 +124,7 @@ async function verifySignature(jwk: Jwk, signed: string, signature: Uint8Array):
     'RSASSA-PKCS1-v1_5',
     key,
     signature,
-    new TextEncoder().encode(signed),
+    utf8(signed),
   );
 }
 
