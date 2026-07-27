@@ -1,397 +1,376 @@
 /**
- * Hono route factory for clawdwatch v2
+ * The HTTP API.
  *
- * Creates a mountable sub-app with:
- * - Status API (R2 state + D1 checks)
- * - Check CRUD
- * - Incidents, alert rules, maintenance windows
- * - Config export/import
+ * Reads are open by default (mount behind Access if you want them private);
+ * every write requires a principal. Responses pass through `redactCheck`, so a
+ * config export can be committed to a repo without leaking anything.
  */
 
 import { Hono } from 'hono';
-import type {
-  CheckConfig,
-  MonitoringCheckStatus,
-  MonitoringStatusResponse,
-} from '../types';
-import { loadState } from '../engine/state';
-import {
-  loadAllChecks,
-  loadCheck,
-  createCheck,
-  updateCheck,
-  deleteCheck,
-  toggleCheck,
-  listIncidents,
-  loadAllAlertRules,
-  createAlertRule,
-  deleteAlertRule,
-  listMaintenanceWindows,
-  createMaintenanceWindow,
-  deleteMaintenanceWindow,
-  loadHistory,
-} from '../engine/db';
+import type { CheckConfig, ClawdWatchOptions, SecretMap } from '../types';
+import { DEFAULTS } from '../types';
+import { redactCheck, LeakedSecretError } from '../engine/secrets';
 import { runCheck } from '../engine/runner';
+import { emptyState } from '../engine/transition';
+import {
+  activeMaintenance,
+  annotateIncident,
+  deleteCheck,
+  getCheck,
+  insertResultStatement,
+  listChecks,
+  listIncidents,
+  latestDeliveries,
+  listResults,
+  loadStates,
+  upsertCheck,
+} from '../engine/store/d1';
+import { authenticate, AuthError, type AuthConfig, type Principal } from '../auth';
+import { buildAgentDoc } from './agent-md';
+import { dashboardHtml } from '../dashboard-html';
 
-interface RouteConfig {
-  stateKey: string;
-  userAgent: string;
-  getD1: (c: any) => D1Database;
-  getBucket: (c: any) => R2Bucket;
-  resolveUrl?: (url: string, env: any) => string;
+export interface RouteConfig<TEnv> {
+  options: ClawdWatchOptions<TEnv>;
+  /** Static auth config, used when `resolveAuth` is absent. */
+  auth: AuthConfig;
+  /** Per-request auth config, so team domain and AUD can come from env. */
+  resolveAuth?: (env: TEnv) => AuthConfig;
 }
 
-export function createRoutes(config: RouteConfig): Hono {
-  const app = new Hono();
+/** Normalise a partial check from an API body into a full CheckConfig. */
+export function normaliseCheck(input: Record<string, unknown>, existing?: CheckConfig): CheckConfig {
+  const pick = <T>(key: string, fallback: T): T =>
+    input[key] !== undefined ? (input[key] as T) : fallback;
 
-  // ── Status ──
+  const base: CheckConfig = existing ?? {
+    id: '',
+    name: '',
+    url: '',
+    method: 'GET',
+    headers: {},
+    body: null,
+    assertions: [],
+    retryCount: DEFAULTS.retryCount,
+    retryDelayMs: DEFAULTS.retryDelayMs,
+    timeoutMs: DEFAULTS.timeoutMs,
+    failureThreshold: DEFAULTS.failureThreshold,
+    reminderIntervalMs: DEFAULTS.reminderIntervalMs,
+    intervalMins: DEFAULTS.intervalMins,
+    tags: [],
+    enabled: true,
+  };
 
-  app.get('/api/status', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const bucket = config.getBucket(c);
-      const state = await loadState(bucket, config.stateKey);
-      const checks = await loadAllChecks(db);
+  return {
+    id: pick('id', base.id),
+    name: pick('name', base.name),
+    url: pick('url', base.url),
+    method: pick('method', base.method),
+    headers: pick('headers', base.headers),
+    body: pick('body', base.body),
+    assertions: pick('assertions', base.assertions),
+    retryCount: pick('retryCount', base.retryCount),
+    retryDelayMs: pick('retryDelayMs', base.retryDelayMs),
+    timeoutMs: pick('timeoutMs', base.timeoutMs),
+    failureThreshold: pick('failureThreshold', base.failureThreshold),
+    reminderIntervalMs: pick('reminderIntervalMs', base.reminderIntervalMs),
+    intervalMins: pick('intervalMins', base.intervalMins),
+    tags: pick('tags', base.tags),
+    enabled: pick('enabled', base.enabled),
+  };
+}
 
-      // Load 24h history from D1 (graceful fallback if table doesn't exist yet)
-      const checkIds = checks.map((ch) => ch.id);
-      let historyMap = new Map<string, import('../types').HistoryEntry[]>();
-      try {
-        historyMap = await loadHistory(db, checkIds);
-      } catch (err) {
-        console.warn('[clawdwatch] Failed to load history, falling back to empty:', err);
-      }
-
-      const checkStatuses: MonitoringCheckStatus[] = checks.map((check) => {
-        const checkState = state.checks[check.id];
-        const history = historyMap.get(check.id) ?? [];
-        const totalEntries = history.length;
-        const healthyEntries = history.filter((h) => h.status === 'healthy').length;
-        const uptimePercent = totalEntries > 0
-          ? Math.round((healthyEntries / totalEntries) * 10000) / 100
-          : null;
-
-        return {
-          id: check.id,
-          name: check.name,
-          type: check.type,
-          url: check.url,
-          tags: check.tags,
-          status: checkState?.status ?? 'unknown',
-          consecutiveFailures: checkState?.consecutiveFailures ?? 0,
-          lastCheck: checkState?.lastCheck ?? null,
-          lastSuccess: checkState?.lastSuccess ?? null,
-          lastError: checkState?.lastError ?? null,
-          responseTimeMs: checkState?.responseTimeMs ?? null,
-          history,
-          uptimePercent,
-          enabled: check.enabled,
-        };
-      });
-
-      const hasUnhealthy = checkStatuses.some((cs) => cs.status === 'unhealthy');
-      const hasDegraded = checkStatuses.some((cs) => cs.status === 'degraded');
-      const overall = hasUnhealthy ? 'unhealthy' : hasDegraded ? 'degraded' : 'healthy';
-
-      const response: MonitoringStatusResponse = {
-        overall,
-        checks: checkStatuses,
-        lastRun: state.lastRun,
-      };
-
-      return c.json(response);
-    } catch (err) {
-      console.error('[clawdwatch] Status API error:', err);
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  // ── Check CRUD ──
-
-  app.get('/api/checks', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const checks = await loadAllChecks(db);
-      return c.json({ checks });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.get('/api/checks/:id', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const check = await loadCheck(db, c.req.param('id'));
-      if (!check) return c.json({ error: 'Check not found' }, 404);
-      return c.json(check);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.post('/api/checks', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const body = await c.req.json<Partial<CheckConfig> & { id: string; name: string; url: string }>();
-      if (!body.id || !body.name || !body.url) {
-        return c.json({ error: 'id, name, and url are required' }, 400);
-      }
-      await createCheck(db, body);
-      return c.json({ ok: true, id: body.id }, 201);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.put('/api/checks/:id', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const body = await c.req.json<Partial<CheckConfig>>();
-      const updated = await updateCheck(db, c.req.param('id'), body);
-      if (!updated) return c.json({ error: 'Check not found or no changes' }, 404);
-      return c.json({ ok: true });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.delete('/api/checks/:id', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const deleted = await deleteCheck(db, c.req.param('id'));
-      if (!deleted) return c.json({ error: 'Check not found' }, 404);
-      return c.json({ ok: true });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.post('/api/checks/:id/toggle', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const toggled = await toggleCheck(db, c.req.param('id'));
-      if (!toggled) return c.json({ error: 'Check not found' }, 404);
-      return c.json({ ok: true });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.post('/api/checks/:id/run', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const check = await loadCheck(db, c.req.param('id'));
-      if (!check) return c.json({ error: 'Check not found' }, 404);
-
-      const resolvedUrl = config.resolveUrl
-        ? config.resolveUrl(check.url, (c as any).env)
-        : check.url;
-
-      const result = await runCheck(check, resolvedUrl, config.userAgent);
-      return c.json(result);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  // ── Incidents ──
-
-  app.get('/api/incidents', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const checkId = c.req.query('check_id');
-      const status = c.req.query('status') as 'open' | 'resolved' | undefined;
-      const limit = c.req.query('limit') ? Number(c.req.query('limit')) : undefined;
-
-      const incidents = await listIncidents(db, { checkId, status, limit });
-      return c.json({ incidents });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  // ── Alert Rules ──
-
-  app.get('/api/alert-rules', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const rules = await loadAllAlertRules(db);
-      return c.json({ alertRules: rules });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.post('/api/alert-rules', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const body = await c.req.json<{
-        channel: string;
-        check_id?: string | null;
-        group_id?: string | null;
-        config?: Record<string, unknown>;
-        on_failure?: boolean;
-        on_recovery?: boolean;
-        enabled?: boolean;
-      }>();
-      if (!body.channel) {
-        return c.json({ error: 'channel is required' }, 400);
-      }
-      const id = await createAlertRule(db, body);
-      return c.json({ ok: true, id }, 201);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.delete('/api/alert-rules/:id', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const id = Number(c.req.param('id'));
-      const deleted = await deleteAlertRule(db, id);
-      if (!deleted) return c.json({ error: 'Alert rule not found' }, 404);
-      return c.json({ ok: true });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  // ── Maintenance Windows ──
-
-  app.get('/api/maintenance', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const windows = await listMaintenanceWindows(db);
-      return c.json({ maintenanceWindows: windows });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.post('/api/maintenance', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const body = await c.req.json<{
-        starts_at: string;
-        ends_at: string;
-        check_id?: string | null;
-        group_id?: string | null;
-        reason?: string | null;
-        suppress_alerts?: boolean;
-        skip_checks?: boolean;
-      }>();
-      if (!body.starts_at || !body.ends_at) {
-        return c.json({ error: 'starts_at and ends_at are required' }, 400);
-      }
-      const id = await createMaintenanceWindow(db, body);
-      return c.json({ ok: true, id }, 201);
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.delete('/api/maintenance/:id', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const id = Number(c.req.param('id'));
-      const deleted = await deleteMaintenanceWindow(db, id);
-      if (!deleted) return c.json({ error: 'Maintenance window not found' }, 404);
-      return c.json({ ok: true });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  // ── Config Export/Import ──
-
-  app.get('/api/config', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const checks = await loadAllChecks(db);
-      const alertRules = await loadAllAlertRules(db);
-      return c.json({ checks, alertRules });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  app.put('/api/config', async (c) => {
-    try {
-      const db = config.getD1(c);
-      const body = await c.req.json<{
-        checks?: Array<Partial<CheckConfig> & { id: string; name: string; url: string }>;
-      }>();
-
-      if (!body.checks) {
-        return c.json({ error: 'checks array required' }, 400);
-      }
-
-      // Get existing checks for diff
-      const existing = await loadAllChecks(db);
-      const existingIds = new Set(existing.map((ch) => ch.id));
-      const incomingIds = new Set(body.checks.map((ch) => ch.id));
-
-      // Delete checks not in import
-      for (const ex of existing) {
-        if (!incomingIds.has(ex.id)) {
-          // eslint-disable-next-line no-await-in-loop
-          await deleteCheck(db, ex.id);
-        }
-      }
-
-      // Create or update checks
-      for (const ch of body.checks) {
-        if (existingIds.has(ch.id)) {
-          // eslint-disable-next-line no-await-in-loop
-          await updateCheck(db, ch.id, ch);
-        } else {
-          // eslint-disable-next-line no-await-in-loop
-          await createCheck(db, ch);
-        }
-      }
-
-      return c.json({ ok: true, synced: body.checks.length });
-    } catch (err) {
-      return c.json({ error: err instanceof Error ? err.message : 'Unknown error' }, 500);
-    }
-  });
-
-  return app;
+function validate(check: CheckConfig): string | null {
+  if (!check.id) return 'id is required';
+  if (!/^[a-zA-Z0-9._-]+$/.test(check.id)) return 'id may contain only letters, digits, . _ -';
+  if (!check.name) return 'name is required';
+  if (!check.url) return 'url is required';
+  if (check.timeoutMs <= 0) return 'timeoutMs must be positive';
+  if (check.failureThreshold < 1) return 'failureThreshold must be at least 1';
+  if (check.intervalMins < 1) return 'intervalMins must be at least 1';
+  return null;
 }
 
 /**
- * Create a public status JSON handler (mount without auth)
+ * Hono constrains Bindings to Record<string, unknown>, which a plain `interface
+ * Env` does not satisfy. Keep the app loosely typed internally and narrow at
+ * the one place env is read.
  */
-export function createStatusHandler(config: RouteConfig) {
-  return async (c: any) => {
+type LooseBindings = Record<string, unknown>;
+
+export function createRoutes<TEnv>(config: RouteConfig<TEnv>): Hono<{ Bindings: LooseBindings }> {
+  const app = new Hono<{ Bindings: LooseBindings }>();
+  const envOf = (c: { env: LooseBindings }): TEnv => c.env as TEnv;
+  const { options } = config;
+  const authFor = (env: TEnv): AuthConfig => config.resolveAuth?.(env) ?? config.auth;
+
+  const db = (env: TEnv) => options.d1(env);
+  const secretsFor = (env: TEnv): SecretMap => options.secrets?.(env) ?? {};
+
+  /** Guard a write. Returns a Response on failure, or the principal. */
+  async function guard(
+    request: Request,
+    env: TEnv,
+    scope?: string,
+  ): Promise<Principal | { error: string; status: 401 | 403 }> {
     try {
-      const db = config.getD1(c);
-      const bucket = config.getBucket(c);
-      const state = await loadState(bucket, config.stateKey);
-      const checks = await loadAllChecks(db);
-
-      const checkStatuses = checks
-        .filter((ch) => ch.enabled)
-        .map((check) => {
-          const checkState = state.checks[check.id];
-          return {
-            id: check.id,
-            name: check.name,
-            status: checkState?.status ?? 'unknown',
-            responseTimeMs: checkState?.responseTimeMs ?? null,
-          };
-        });
-
-      const hasUnhealthy = checkStatuses.some((cs) => cs.status === 'unhealthy');
-      const hasDegraded = checkStatuses.some((cs) => cs.status === 'degraded');
-      const overall = hasUnhealthy ? 'unhealthy' : hasDegraded ? 'degraded' : 'healthy';
-
-      return c.json({ overall, checks: checkStatuses, lastRun: state.lastRun });
+      return await authenticate(request, authFor(env), scope);
     } catch (err) {
-      return c.json(
-        { error: err instanceof Error ? err.message : 'Unknown error' },
-        500,
-      );
+      if (err instanceof AuthError) return { error: err.message, status: err.status };
+      throw err;
     }
-  };
+  }
+
+  function isDenied(p: unknown): p is { error: string; status: 401 | 403 } {
+    return typeof p === 'object' && p !== null && 'error' in p && 'status' in p;
+  }
+
+  // ── Status ────────────────────────────────────────────────────────────
+
+  app.get('/api/status', async (c) => {
+    const database = db(envOf(c));
+    const [checks, states] = await Promise.all([listChecks(database), loadStates(database)]);
+
+    const rows = checks.map((check) => {
+      const state = states.get(check.id) ?? emptyState(check.id);
+      return {
+        id: check.id,
+        name: check.name,
+        url: check.url,
+        tags: check.tags,
+        enabled: check.enabled,
+        status: state.status,
+        consecutiveFailures: state.consecutiveFailures,
+        lastCheckAt: state.lastCheckAt,
+        lastSuccessAt: state.lastSuccessAt,
+        lastError: state.lastError,
+        lastResponseMs: state.lastResponseMs,
+        downSince: state.downSince,
+      };
+    });
+
+    const active = rows.filter((r) => r.enabled);
+    const overall = active.some((r) => r.status === 'unhealthy')
+      ? 'unhealthy'
+      : active.some((r) => r.status === 'degraded')
+        ? 'degraded'
+        : 'healthy';
+
+    return c.json({ overall, checks: rows, generatedAt: new Date().toISOString() });
+  });
+
+  app.get('/api/checks/:id/history', async (c) => {
+    const results = await listResults(db(envOf(c)), c.req.param('id'), 288);
+    return c.json({ results });
+  });
+
+  // ── Checks ────────────────────────────────────────────────────────────
+
+  app.get('/api/checks', async (c) => {
+    const secrets = secretsFor(envOf(c));
+    const checks = await listChecks(db(envOf(c)));
+    return c.json({ checks: checks.map((ch) => redactCheck(ch, secrets)) });
+  });
+
+  app.get('/api/checks/:id', async (c) => {
+    const check = await getCheck(db(envOf(c)), c.req.param('id'));
+    if (!check) return c.json({ error: 'Not found' }, 404);
+    return c.json(redactCheck(check, secretsFor(envOf(c))));
+  });
+
+  app.post('/api/checks', async (c) => {
+    const principal = await guard(c.req.raw, envOf(c));
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const body = await c.req.json().catch(() => null);
+    if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
+
+    const check = normaliseCheck(body);
+    const problem = validate(check);
+    if (problem) return c.json({ error: problem }, 400);
+
+    if (await getCheck(db(envOf(c)), check.id)) {
+      return c.json({ error: `A check with id "${check.id}" already exists` }, 409);
+    }
+
+    try {
+      await upsertCheck(db(envOf(c)), check, secretsFor(envOf(c)));
+    } catch (err) {
+      if (err instanceof LeakedSecretError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
+    return c.json(redactCheck(check, secretsFor(envOf(c))), 201);
+  });
+
+  app.put('/api/checks/:id', async (c) => {
+    const principal = await guard(c.req.raw, envOf(c));
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const existing = await getCheck(db(envOf(c)), c.req.param('id'));
+    if (!existing) return c.json({ error: 'Not found' }, 404);
+
+    const body = await c.req.json().catch(() => null);
+    if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
+
+    const check = normaliseCheck({ ...body, id: existing.id }, existing);
+    const problem = validate(check);
+    if (problem) return c.json({ error: problem }, 400);
+
+    try {
+      await upsertCheck(db(envOf(c)), check, secretsFor(envOf(c)));
+    } catch (err) {
+      if (err instanceof LeakedSecretError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
+    return c.json(redactCheck(check, secretsFor(envOf(c))));
+  });
+
+  app.delete('/api/checks/:id', async (c) => {
+    const principal = await guard(c.req.raw, envOf(c));
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const existing = await getCheck(db(envOf(c)), c.req.param('id'));
+    if (!existing) return c.json({ error: 'Not found' }, 404);
+
+    await deleteCheck(db(envOf(c)), existing.id);
+    return c.json({ deleted: existing.id });
+  });
+
+  app.post('/api/checks/:id/toggle', async (c) => {
+    const principal = await guard(c.req.raw, envOf(c));
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const existing = await getCheck(db(envOf(c)), c.req.param('id'));
+    if (!existing) return c.json({ error: 'Not found' }, 404);
+
+    const updated = { ...existing, enabled: !existing.enabled };
+    await upsertCheck(db(envOf(c)), updated, secretsFor(envOf(c)));
+    return c.json({ id: updated.id, enabled: updated.enabled });
+  });
+
+  app.post('/api/checks/:id/run', async (c) => {
+    const id = c.req.param('id');
+    const principal = await guard(c.req.raw, envOf(c), `run:${id}`);
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const check = await getCheck(db(envOf(c)), id);
+    if (!check) return c.json({ error: 'Not found' }, 404);
+
+    const result = await runCheck(check, {
+      resolvedUrl: options.resolveUrl?.(check.url, envOf(c)) ?? check.url,
+      headerRules: options.headerRules ?? [],
+      secrets: secretsFor(envOf(c)),
+      userAgent: options.defaults?.userAgent ?? DEFAULTS.userAgent,
+      now: () => Date.now(),
+    });
+
+    // An ad-hoc run is still a data point worth keeping.
+    await db(envOf(c)).batch([insertResultStatement(db(envOf(c)), result)]);
+    return c.json(result);
+  });
+
+  // ── Incidents ─────────────────────────────────────────────────────────
+
+  app.get('/api/incidents', async (c) => {
+    const url = new URL(c.req.url);
+    const openParam = url.searchParams.get('status');
+    const incidents = await listIncidents(db(envOf(c)), {
+      checkId: url.searchParams.get('check_id') ?? undefined,
+      open: openParam === 'open' ? true : openParam === 'resolved' ? false : undefined,
+      limit: Number(url.searchParams.get('limit') ?? 50),
+    });
+    return c.json({ incidents });
+  });
+
+  app.post('/api/incidents/:id/annotate', async (c) => {
+    const id = c.req.param('id');
+    const principal = await guard(c.req.raw, envOf(c), `annotate:${id}`);
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const body = (await c.req.json().catch(() => null)) as { annotation?: string } | null;
+    if (!body?.annotation) return c.json({ error: 'annotation is required' }, 400);
+
+    await annotateIncident(db(envOf(c)), id, body.annotation);
+    return c.json({ id, annotation: body.annotation });
+  });
+
+  app.post('/api/incidents/:id/ack', async (c) => {
+    const id = c.req.param('id');
+    const principal = await guard(c.req.raw, envOf(c), `ack:${id}`);
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const body = (await c.req.json().catch(() => ({}))) as { note?: string };
+    const note = body.note ? `Acknowledged: ${body.note}` : 'Acknowledged';
+    await annotateIncident(db(envOf(c)), id, note);
+    return c.json({ id, acknowledged: true });
+  });
+
+  // ── Maintenance ───────────────────────────────────────────────────────
+
+  app.get('/api/maintenance', async (c) => {
+    const windows = await activeMaintenance(db(envOf(c)), new Date().toISOString());
+    return c.json({ windows });
+  });
+
+  // ── Notifier health ───────────────────────────────────────────────────
+
+  app.get('/api/deliveries', async (c) => {
+    const deliveries = await latestDeliveries(db(envOf(c)));
+    return c.json({ deliveries });
+  });
+
+  // ── Config round-trip ─────────────────────────────────────────────────
+
+  app.get('/api/config', async (c) => {
+    const secrets = secretsFor(envOf(c));
+    const checks = await listChecks(db(envOf(c)));
+    return c.json({
+      version: 3,
+      checks: checks.map((ch) => redactCheck(ch, secrets)),
+    });
+  });
+
+  app.put('/api/config', async (c) => {
+    const principal = await guard(c.req.raw, envOf(c));
+    if (isDenied(principal)) return c.json({ error: principal.error }, principal.status);
+
+    const body = (await c.req.json().catch(() => null)) as { checks?: unknown[] } | null;
+    if (!body || !Array.isArray(body.checks)) {
+      return c.json({ error: 'Body must be { checks: [...] }' }, 400);
+    }
+
+    const secrets = secretsFor(envOf(c));
+    const imported: string[] = [];
+
+    for (const raw of body.checks) {
+      const check = normaliseCheck(raw as Record<string, unknown>);
+      const problem = validate(check);
+      if (problem) return c.json({ error: `${check.id || '(no id)'}: ${problem}` }, 400);
+      try {
+        await upsertCheck(db(envOf(c)), check, secrets);
+      } catch (err) {
+        if (err instanceof LeakedSecretError) {
+          return c.json({ error: `${check.id}: ${err.message}` }, 400);
+        }
+        throw err;
+      }
+      imported.push(check.id);
+    }
+
+    return c.json({ imported });
+  });
+
+  // ── Capability document ───────────────────────────────────────────────
+
+  app.get('/api/agent.md', (c) => {
+    const base = options.baseUrl?.(envOf(c)) ?? new URL(c.req.url).origin;
+    return c.text(buildAgentDoc(base), 200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+  });
+
+  // ── Dashboard ─────────────────────────────────────────────────────────
+  // Last, so it never shadows an /api route.
+
+  app.get('/', (c) => c.html(dashboardHtml));
+  app.get('/dashboard', (c) => c.html(dashboardHtml));
+
+  return app;
 }

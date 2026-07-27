@@ -516,7 +516,7 @@ tbody tr { animation: rowin .18s ease both; }
   <section class="summary" aria-label="Fleet summary">
     <div class="verdict">
       <div class="headline"><span class="dot down" id="vDot"></span><span id="vText">1 check down</span></div>
-      <div class="sub" id="vSub">CamperMate Business · down 18m</div>
+      <div class="sub" id="vSub">Business Portal · down 18m</div>
     </div>
 
     <div class="fleet">
@@ -592,43 +592,43 @@ function rng(seed) {
 
 /* Real endpoints, lifted from the healthcheck worker this replaces. */
 const CHECKS = [
-  { id:"campermate-home", name:"CamperMate Homepage", url:"https://campermate.com/en",
+  { id:"marketing-site", name:"Marketing Site", url:"https://example.com/en",
     tags:["core","web"], method:"GET", base:180, seed:11, state:"ok",
     asserts:[["pass","status is <em>200</em>"],["pass","response time under <em>3000ms</em>"]] },
 
-  { id:"graphql-api", name:"GraphQL API", url:"https://campermate.com/graphql/server",
+  { id:"graphql-api", name:"GraphQL API", url:"https://example.com/graphql/server",
     tags:["core","api"], method:"POST", base:240, seed:23, state:"ok",
     asserts:[["pass","status is <em>200</em>"],["pass","<em>$.data.__typename</em> is not empty"]] },
 
-  { id:"strapi-admin", name:"Strapi CMS Admin", url:"https://cms.campermate.com/admin",
+  { id:"strapi-admin", name:"Strapi CMS Admin", url:"https://cms.example.com/admin",
     tags:["cms"], method:"GET", base:420, seed:31, state:"ok",
     asserts:[["pass","status is <em>200</em>"]] },
 
-  { id:"strapi-health", name:"Strapi API Health", url:"https://cms.campermate.com/_health",
+  { id:"strapi-health", name:"Strapi API Health", url:"https://cms.example.com/_health",
     tags:["cms"], method:"GET", base:95, seed:41, state:"ok",
     asserts:[["pass","status is <em>204</em>"]] },
 
-  { id:"poll-api", name:"Poll API", url:"https://business.geozone.co.nz/appserver/poll.php",
+  { id:"poll-api", name:"Poll API", url:"https://legacy.example.com/api/poll",
     tags:["legacy","api"], method:"POST", base:680, seed:53, state:"warn",
     asserts:[["pass","status is <em>200</em>"],["fail","response time under <em>1500ms</em> — got <em>2140ms</em>"]] },
 
-  { id:"sequin-health", name:"Sequin Health", url:"https://sequin.campermate.com/health",
+  { id:"sequin-health", name:"Sequin Health", url:"https://sequin.example.com/health",
     tags:["data"], method:"GET", base:130, seed:67, state:"ok",
     asserts:[["pass","status is <em>200</em>"]] },
 
-  { id:"typesense-proxy", name:"Typesense Proxy Health", url:"https://privatesearch.campermate.com/health",
+  { id:"typesense-proxy", name:"Typesense Proxy Health", url:"https://search.example.com/health",
     tags:["data","search"], method:"GET", base:150, seed:71, state:"ok",
     asserts:[["pass","status is <em>200</em>"]] },
 
-  { id:"business-login", name:"CamperMate Business", url:"https://business.campermate.com/auth/login",
+  { id:"business-login", name:"Business Portal", url:"https://business.example.com/auth/login",
     tags:["apps"], method:"GET", base:310, seed:83, state:"down",
     asserts:[["fail","status is <em>200</em> — got <em>502</em>"]] },
 
-  { id:"agent-chat", name:"Agent Chat", url:"https://agent.campermate.com/agents/chat/datadog-healthcheck/get-messages",
+  { id:"agent-chat", name:"Agent Chat", url:"https://agent.example.com/chat/messages",
     tags:["apps","agent"], method:"GET", base:270, seed:97, state:"ok",
     asserts:[["pass","status is <em>200</em>"]] },
 
-  { id:"image-cdn", name:"Image CDN", url:"https://images.campermate.com/photos/0f677ebb.jpeg?width=100&height=100",
+  { id:"image-cdn", name:"Image CDN", url:"https://images.example.com/photos/0f677ebb.jpeg?width=100&height=100",
     tags:["cdn"], method:"GET", base:88, seed:101, state:"ok",
     asserts:[["pass","status is <em>200</em>"],["pass","header <em>content-type</em> contains <em>image</em>"]] },
 ];

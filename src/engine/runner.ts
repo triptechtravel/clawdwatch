@@ -1,270 +1,106 @@
 /**
- * Check runner — executes monitoring checks via fetch()
- * with assertion evaluation and retry support.
+ * Executes a single check: build the request (resolving secrets), fetch,
+ * evaluate assertions, retry on failure.
  *
- * v2: URL is pre-resolved by the orchestrator. Timeout, retry,
- * headers, and body all come from the CheckConfig (loaded from D1).
+ * Secret values exist only inside this module's call stack — they enter via
+ * `buildRequestHeaders` and leave via `fetch`. Nothing they touch is returned:
+ * a CheckResult carries only status, timing, and assertion messages.
  */
 
-import type { CheckConfig, CheckResult, Assertion } from '../types';
+import type { CheckConfig, CheckResult, HeaderRule, SecretMap } from '../types';
+import { needsBody } from '../types';
+import { buildRequestHeaders, truncateError, UnresolvedSecretError } from './secrets';
+import { DEFAULT_ASSERTION, evaluateAssertions, readBodyCapped } from './assertions';
 
-const MAX_BODY_SIZE = 512 * 1024; // 512KB max for body assertions
+export interface RunnerContext {
+  resolvedUrl: string;
+  headerRules: HeaderRule[];
+  secrets: SecretMap;
+  userAgent: string;
+  now: () => number;
+}
 
-/**
- * Run a single check with retry support.
- * Retries only happen on failure — a passing check returns immediately.
- */
-export async function runCheck(
-  check: CheckConfig,
-  resolvedUrl: string,
-  userAgent: string,
-): Promise<CheckResult> {
-  let result = await executeCheck(check, resolvedUrl, userAgent);
+/** Run a check, retrying on failure up to `retryCount` times. */
+export async function runCheck(check: CheckConfig, ctx: RunnerContext): Promise<CheckResult> {
+  let result = await executeOnce(check, ctx);
 
-  for (let attempt = 0; attempt < check.retry_count && !result.success; attempt++) {
-    await sleep(check.retry_delay_ms);
-    result = await executeCheck(check, resolvedUrl, userAgent);
+  for (let attempt = 0; attempt < check.retryCount && !result.success; attempt++) {
+    if (check.retryDelayMs > 0) await sleep(check.retryDelayMs);
+    result = await executeOnce(check, ctx);
   }
 
   return result;
 }
 
-async function executeCheck(
-  check: CheckConfig,
-  resolvedUrl: string,
-  userAgent: string,
-): Promise<CheckResult> {
+async function executeOnce(check: CheckConfig, ctx: RunnerContext): Promise<CheckResult> {
   const method = check.method.toUpperCase();
-  const start = Date.now();
+  const started = ctx.now();
+
+  const finish = (
+    partial: Pick<CheckResult, 'success' | 'statusCode' | 'error'>,
+  ): CheckResult => ({
+    checkId: check.id,
+    responseTimeMs: Math.max(0, ctx.now() - started),
+    ranAt: new Date(started).toISOString(),
+    ...partial,
+  });
+
+  let headers: Record<string, string>;
+  try {
+    headers = buildRequestHeaders(
+      check,
+      ctx.resolvedUrl,
+      ctx.headerRules,
+      ctx.secrets,
+      ctx.userAgent,
+    );
+  } catch (err) {
+    // A misconfigured secret is a check failure, not a crash — one bad check
+    // must not take down the whole run.
+    const message =
+      err instanceof UnresolvedSecretError ? err.message : `Header resolution failed: ${err}`;
+    return finish({ success: false, statusCode: null, error: truncateError(message) });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), check.timeoutMs);
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), check.timeout_ms);
-
-    const headers: Record<string, string> = {
-      'User-Agent': userAgent,
-      ...check.headers,
-    };
-
-    const fetchOptions: RequestInit = {
+    const init: RequestInit = {
       method,
-      signal: controller.signal,
-      redirect: 'follow',
       headers,
+      redirect: 'follow',
+      signal: controller.signal,
     };
+    if (check.body && method !== 'GET' && method !== 'HEAD') init.body = check.body;
 
-    if (check.body && method !== 'GET' && method !== 'HEAD') {
-      fetchOptions.body = check.body;
-    }
+    const response = await fetch(ctx.resolvedUrl, init);
+    const responseTimeMs = Math.max(0, ctx.now() - started);
 
-    const response = await fetch(resolvedUrl, fetchOptions);
-    clearTimeout(timer);
-    const responseTimeMs = Date.now() - start;
+    const assertions = check.assertions.length > 0 ? check.assertions : [DEFAULT_ASSERTION];
+    const body = needsBody(assertions) ? await readBodyCapped(response) : null;
 
-    // Read body only if needed for assertions
-    const needsBody = check.assertions.some((a) => a.type === 'body' || a.type === 'jsonPath');
-    let body: string | null = null;
-    if (needsBody) {
-      body = await readBodyCapped(response);
-    }
-
-    const assertions = check.assertions.length > 0
-      ? check.assertions
-      : [{ type: 'statusCode' as const, operator: 'is' as const, value: 200 }];
     const failures = evaluateAssertions(assertions, response, responseTimeMs, body);
 
     return {
-      id: check.id,
+      checkId: check.id,
       success: failures.length === 0,
       statusCode: response.status,
       responseTimeMs,
-      error: failures.length > 0 ? failures.join('; ') : null,
+      error: failures.length > 0 ? truncateError(failures.join('; ')) : null,
+      ranAt: new Date(started).toISOString(),
     };
   } catch (err) {
-    const responseTimeMs = Date.now() - start;
     const message = err instanceof Error ? err.message : 'Unknown error';
-    const isTimeout = message.includes('abort');
-
-    return {
-      id: check.id,
+    const aborted = controller.signal.aborted || /abort/i.test(message);
+    return finish({
       success: false,
       statusCode: null,
-      responseTimeMs,
-      error: isTimeout ? `Timeout after ${check.timeout_ms}ms` : message,
-    };
+      error: aborted ? `Timeout after ${check.timeoutMs}ms` : truncateError(message),
+    });
+  } finally {
+    clearTimeout(timer);
   }
-}
-
-/**
- * Evaluate all assertions against a response. Returns an array of failure messages.
- */
-export function evaluateAssertions(
-  assertions: Assertion[],
-  response: Response,
-  responseTimeMs: number,
-  body: string | null,
-): string[] {
-  const failures: string[] = [];
-
-  for (const assertion of assertions) {
-    switch (assertion.type) {
-      case 'statusCode': {
-        const actual = response.status;
-        if (assertion.operator === 'is' && actual !== assertion.value) {
-          failures.push(`Expected status ${assertion.value}, got ${actual}`);
-        } else if (assertion.operator === 'isNot' && actual === assertion.value) {
-          failures.push(`Expected status not ${assertion.value}`);
-        }
-        break;
-      }
-
-      case 'header': {
-        const actual = response.headers.get(assertion.name);
-        const failed = evaluateStringAssertion(assertion.operator, actual ?? '', assertion.value, actual === null);
-        if (failed) {
-          failures.push(`Header "${assertion.name}": ${failed}`);
-        }
-        break;
-      }
-
-      case 'body': {
-        if (body === null) {
-          failures.push('Body assertion requires response body but body was not read');
-          break;
-        }
-        const failed = evaluateStringAssertion(assertion.operator, body, assertion.value, false);
-        if (failed) {
-          failures.push(`Body: ${failed}`);
-        }
-        break;
-      }
-
-      case 'responseTime': {
-        if (assertion.operator === 'lessThan' && responseTimeMs >= assertion.value) {
-          failures.push(`Response time ${responseTimeMs}ms >= ${assertion.value}ms`);
-        }
-        break;
-      }
-
-      case 'jsonPath': {
-        if (body === null) {
-          failures.push('jsonPath assertion requires response body but body was not read');
-          break;
-        }
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(body);
-        } catch {
-          failures.push(`jsonPath "${assertion.path}": body is not valid JSON`);
-          break;
-        }
-        const extracted = resolveJsonPath(parsed, assertion.path);
-        if (extracted === undefined) {
-          failures.push(`jsonPath "${assertion.path}": path not found`);
-          break;
-        }
-        const actual = typeof extracted === 'string' ? extracted : JSON.stringify(extracted);
-        // Handle numeric comparison operators
-        if (assertion.operator === 'lessThan' || assertion.operator === 'greaterThan') {
-          const numActual = Number(actual);
-          const numExpected = Number(assertion.value);
-          if (isNaN(numActual) || isNaN(numExpected)) {
-            failures.push(`jsonPath "${assertion.path}": cannot compare non-numeric values`);
-          } else if (assertion.operator === 'lessThan' && numActual >= numExpected) {
-            failures.push(`jsonPath "${assertion.path}": ${numActual} >= ${numExpected}`);
-          } else if (assertion.operator === 'greaterThan' && numActual <= numExpected) {
-            failures.push(`jsonPath "${assertion.path}": ${numActual} <= ${numExpected}`);
-          }
-        } else {
-          const failed = evaluateStringAssertion(assertion.operator, actual, assertion.value, false);
-          if (failed) {
-            failures.push(`jsonPath "${assertion.path}": ${failed}`);
-          }
-        }
-        break;
-      }
-    }
-  }
-
-  return failures;
-}
-
-function evaluateStringAssertion(
-  operator: string,
-  actual: string,
-  expected: string,
-  missing: boolean,
-): string | null {
-  switch (operator) {
-    case 'is':
-      if (actual !== expected) return `expected "${expected}", got "${actual}"`;
-      break;
-    case 'isNot':
-      if (actual === expected) return `expected not "${expected}"`;
-      break;
-    case 'contains':
-      if (missing || !actual.includes(expected)) return `expected to contain "${expected}"`;
-      break;
-    case 'notContains':
-      if (actual.includes(expected)) return `expected not to contain "${expected}"`;
-      break;
-    case 'matches': {
-      const regex = new RegExp(expected);
-      if (!regex.test(actual)) return `expected to match /${expected}/`;
-      break;
-    }
-  }
-  return null;
-}
-
-/**
- * Resolve a simple JSON path ($.foo.bar, $.items[0].id) against an object.
- * Returns undefined for missing paths. No wildcards or recursive descent.
- */
-export function resolveJsonPath(obj: unknown, path: string): unknown {
-  if (!path.startsWith('$')) return undefined;
-  const rest = path.slice(1); // strip leading $
-  if (rest === '' || rest === '.') return obj;
-
-  // Split into segments: .foo, [0], .bar
-  const segments = rest.match(/\.([^.[]+)|\[(\d+)]/g);
-  if (!segments) return undefined;
-
-  let current: unknown = obj;
-  for (const seg of segments) {
-    if (current === null || current === undefined) return undefined;
-    if (seg.startsWith('[')) {
-      const index = parseInt(seg.slice(1, -1), 10);
-      if (!Array.isArray(current)) return undefined;
-      if (index < 0 || index >= current.length) return undefined;
-      current = current[index];
-    } else {
-      // .fieldName
-      const key = seg.slice(1);
-      if (typeof current !== 'object') return undefined;
-      current = (current as Record<string, unknown>)[key];
-    }
-  }
-  return current;
-}
-
-async function readBodyCapped(response: Response): Promise<string> {
-  const reader = response.body?.getReader();
-  if (!reader) return '';
-
-  const chunks: Uint8Array[] = [];
-  let totalSize = 0;
-
-  while (totalSize < MAX_BODY_SIZE) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    totalSize += value.length;
-  }
-
-  reader.releaseLock();
-  const decoder = new TextDecoder();
-  return chunks.map((c) => decoder.decode(c, { stream: true })).join('') + decoder.decode();
 }
 
 function sleep(ms: number): Promise<void> {

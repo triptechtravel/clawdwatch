@@ -1,355 +1,363 @@
-import { useState, useEffect, useCallback } from 'react';
-import './Dashboard.css';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import './dashboard.css';
+import { api, type DeliveryRow, type ResultRow, type StatusRow } from './api';
+import { LABEL, clockTime, formatDuration, percentile, timeAgo, tone, uptimePercent } from './format';
+import { TickStrip } from './TickStrip';
+import { Drawer } from './Drawer';
 
-const REFRESH_INTERVAL = 60_000;
-const MAX_HISTORY = 288;
-
-interface HistoryEntry {
-  timestamp: string;
-  status: string;
-  responseTimeMs: number;
-  error: string | null;
-}
-
-interface CheckStatus {
-  id: string;
-  name: string;
-  type: string;
-  url: string;
-  tags: string[];
-  status: string;
-  consecutiveFailures: number;
-  lastCheck: string | null;
-  lastSuccess: string | null;
-  lastError: string | null;
-  responseTimeMs: number | null;
-  history: HistoryEntry[];
-  uptimePercent: number | null;
-}
-
-interface StatusResponse {
-  overall: string;
-  checks: CheckStatus[];
-  lastRun: string | null;
-}
-
-function statusLabel(status: string): string {
-  switch (status) {
-    case 'healthy': return 'Healthy';
-    case 'degraded': return 'Degraded';
-    case 'unhealthy': return 'Down';
-    default: return 'Unknown';
-  }
-}
-
-function statusColor(status: string): string {
-  switch (status) {
-    case 'healthy': return '#4ade80';
-    case 'degraded': return '#fbbf24';
-    case 'unhealthy': return '#ef4444';
-    default: return '#6b7280';
-  }
-}
-
-function statusBgColor(status: string): string {
-  switch (status) {
-    case 'healthy': return 'rgba(74, 222, 128, 0.25)';
-    case 'degraded': return 'rgba(251, 191, 36, 0.25)';
-    case 'unhealthy': return 'rgba(239, 68, 68, 0.25)';
-    default: return 'rgba(107, 114, 128, 0.25)';
-  }
-}
-
-function formatTimeShort(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-}
-
-function formatMs(ms: number | null): string {
-  if (ms === null) return '--';
-  return `${ms}ms`;
-}
-
-function timeAgo(iso: string | null): string {
-  if (!iso) return 'Never';
-  const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-}
+const REFRESH_MS = 60_000;
+const TONES = ['ok', 'warn', 'down'] as const;
 
 export function Dashboard() {
-  const [data, setData] = useState<StatusResponse | null>(null);
+  const [rows, setRows] = useState<StatusRow[]>([]);
+  const [history, setHistory] = useState<Record<string, ResultRow[]>>({});
+  const [deliveries, setDeliveries] = useState<DeliveryRow[]>([]);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const fetchData = useCallback(async () => {
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<Set<string>>(new Set());
+  const [tagFilter, setTagFilter] = useState<Set<string>>(new Set());
+  const [selected, setSelected] = useState<string | null>(null);
+
+  const [tip, setTip] = useState<{ text: string; x: number; y: number } | null>(null);
+  const liveRef = useRef<HTMLDivElement>(null);
+
+  const load = useCallback(async () => {
     try {
-      const res = await fetch('./api/status');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const status = await res.json();
-      setData(status);
+      const status = await api.status();
+      setRows(status.checks);
+      setGeneratedAt(status.generatedAt);
       setError(null);
+
+      // History drives the tick strips; fetched per check but tolerant of
+      // individual failures so one bad check can't blank the whole table.
+      const entries = await Promise.all(
+        status.checks.map(async (check) => {
+          try {
+            const { results } = await api.history(check.id);
+            return [check.id, results] as const;
+          } catch {
+            return [check.id, []] as const;
+          }
+        }),
+      );
+      setHistory(Object.fromEntries(entries));
+
+      try {
+        setDeliveries((await api.deliveries()).deliveries);
+      } catch {
+        /* Notifier health is supplementary. */
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load monitoring status');
+      setError(err instanceof Error ? err.message : 'Could not load status');
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, REFRESH_INTERVAL);
-    return () => clearInterval(interval);
-  }, [fetchData]);
+    void load();
+    const timer = setInterval(() => void load(), REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [load]);
 
-  if (loading) {
-    return (
-      <div className="cw-loading">
-        <div className="cw-spinner" />
-        <p>Loading monitoring status...</p>
-      </div>
-    );
+  const counts = useMemo(() => {
+    const tally = { ok: 0, warn: 0, down: 0, idle: 0 };
+    for (const row of rows) tally[tone(row.status)]++;
+    return tally;
+  }, [rows]);
+
+  const tags = useMemo(
+    () => [...new Set(rows.flatMap((r) => r.tags))].sort(),
+    [rows],
+  );
+
+  const visible = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return rows.filter((row) => {
+      if (statusFilter.size > 0 && !statusFilter.has(tone(row.status))) return false;
+      if (tagFilter.size > 0 && !row.tags.some((t) => tagFilter.has(t))) return false;
+      if (needle) {
+        const hay = `${row.name} ${row.url} ${row.tags.join(' ')}`.toLowerCase();
+        if (!hay.includes(needle)) return false;
+      }
+      return true;
+    });
+  }, [rows, query, statusFilter, tagFilter]);
+
+  const allResults = useMemo(() => Object.values(history).flat(), [history]);
+  const fleetUptime = uptimePercent(allResults);
+  const fleetP95 = percentile(
+    allResults.filter((r) => r.success).map((r) => r.responseTimeMs),
+    0.95,
+  );
+
+  const worstDown = rows.find((r) => r.status === 'unhealthy' && r.downSince);
+  const hasFilters = query !== '' || statusFilter.size > 0 || tagFilter.size > 0;
+
+  const onTip = useCallback((text: string | null, anchor?: DOMRect) => {
+    if (!text || !anchor) {
+      setTip(null);
+      return;
+    }
+    setTip({ text, x: anchor.left + anchor.width / 2, y: anchor.top });
+    if (liveRef.current) liveRef.current.textContent = text;
+  }, []);
+
+  function toggle(set: Set<string>, value: string, apply: (next: Set<string>) => void) {
+    const next = new Set(set);
+    if (next.has(value)) next.delete(value);
+    else next.add(value);
+    apply(next);
   }
 
-  if (error) {
-    return (
-      <div className="cw-error-banner">
-        <span>{error}</span>
-        <button className="cw-btn" onClick={() => { setError(null); fetchData(); }}>
-          Retry
+  const verdictTone = counts.down > 0 ? 'down' : counts.warn > 0 ? 'warn' : 'ok';
+  const selectedRow = rows.find((r) => r.id === selected) ?? null;
+
+  return (
+    <>
+      <div className="topbar">
+        <div className="wordmark">
+          <span className={`pulse ${verdictTone}`} style={{ color: `var(--${verdictTone})` }} aria-hidden="true" />
+          clawdwatch
+        </div>
+        <div className="spacer" />
+        <div className="lastrun">
+          updated <b>{generatedAt ? clockTime(generatedAt) : '—'}</b>
+        </div>
+        <button className="btn" type="button" onClick={() => void load()} disabled={loading}>
+          {loading ? 'Refreshing…' : 'Refresh'}
         </button>
       </div>
-    );
-  }
 
-  if (!data) return null;
+      <div className="wrap">
+        {error && <div className="error-banner">{error}</div>}
 
-  const allHistory = data.checks.flatMap((c) => c.history);
-  const totalSuccess = allHistory.filter((h) => h.status === 'healthy').length;
-  const overallUptime = allHistory.length > 0
-    ? Math.round((totalSuccess / allHistory.length) * 10000) / 100
-    : null;
-
-  return (
-    <div className="cw-page">
-      <HeroSection
-        overall={data.overall}
-        lastRun={data.lastRun}
-        overallUptime={overallUptime}
-        checkCount={data.checks.length}
-        onRefresh={fetchData}
-      />
-      <div className="cw-checks-grid">
-        {data.checks.map((check) => (
-          <CheckCard key={check.id} check={check} />
-        ))}
-      </div>
-      {data.checks.length === 0 && (
-        <div className="cw-empty">
-          <p>No monitoring checks configured.</p>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function HeroSection({
-  overall,
-  lastRun,
-  overallUptime,
-  checkCount,
-  onRefresh,
-}: {
-  overall: string;
-  lastRun: string | null;
-  overallUptime: number | null;
-  checkCount: number;
-  onRefresh: () => void;
-}) {
-  return (
-    <div className={`cw-hero cw-hero-${overall}`}>
-      <div className="cw-hero-left">
-        <div className="cw-hero-status-row">
-          <span className={`cw-dot cw-dot-${overall}`} style={{ width: 12, height: 12 }} />
-          <h1 className="cw-hero-title">
-            {overall === 'healthy'
-              ? 'All Systems Operational'
-              : overall === 'degraded'
-                ? 'Partial Degradation'
-                : 'Service Disruption'}
-          </h1>
-        </div>
-        <div className="cw-hero-meta">
-          <span className="cw-hero-stat">
-            {checkCount} check{checkCount !== 1 ? 's' : ''} monitored
-          </span>
-          {overallUptime !== null && (
-            <span className="cw-hero-stat">
-              {overallUptime}% uptime (24h)
-            </span>
-          )}
-          {lastRun && (
-            <span className="cw-hero-stat">
-              Last run: {timeAgo(lastRun)}
-            </span>
-          )}
-        </div>
-      </div>
-      <button className="cw-btn" onClick={onRefresh}>Refresh</button>
-    </div>
-  );
-}
-
-function CheckCard({ check }: { check: CheckStatus }) {
-  const history = padHistory(check.history);
-  const maxResponseTime = Math.max(...history.map((h) => h?.responseTimeMs ?? 0), 1);
-
-  return (
-    <div className="cw-card">
-      <div className="cw-card-header">
-        <div className="cw-card-header-left">
-          <span className={`cw-dot cw-dot-${check.status}`} />
-          <h3 className="cw-card-name">{check.name}</h3>
-        </div>
-        <div className="cw-card-header-right">
-          {check.uptimePercent !== null && (
-            <span className="cw-uptime-pill" style={{
-              backgroundColor: statusBgColor(check.uptimePercent >= 99 ? 'healthy' : check.uptimePercent >= 95 ? 'degraded' : 'unhealthy'),
-              color: statusColor(check.uptimePercent >= 99 ? 'healthy' : check.uptimePercent >= 95 ? 'degraded' : 'unhealthy'),
-            }}>
-              {check.uptimePercent}%
-            </span>
-          )}
-          <span className={`cw-status-badge cw-status-${check.status}`}>
-            {statusLabel(check.status)}
-          </span>
-        </div>
-      </div>
-
-      <div className="cw-viz">
-        <div className="cw-viz-label">Status</div>
-        <StatusTimeline history={history} />
-      </div>
-
-      <div className="cw-viz">
-        <div className="cw-viz-label">Response</div>
-        <ResponseSparkline history={history} maxResponseTime={maxResponseTime} />
-      </div>
-
-      <div className="cw-card-footer">
-        <div className="cw-card-footer-left">
-          <span className="cw-footer-item">{formatMs(check.responseTimeMs)}</span>
-          <span className="cw-footer-item cw-footer-muted">{timeAgo(check.lastCheck)}</span>
-        </div>
-        <div className="cw-card-tags">
-          {check.tags.map((tag) => (
-            <span key={tag} className="cw-tag">{tag}</span>
-          ))}
-        </div>
-      </div>
-
-      {check.lastError && check.status !== 'healthy' && (
-        <div className="cw-card-error">{check.lastError}</div>
-      )}
-    </div>
-  );
-}
-
-function padHistory(history: HistoryEntry[]): (HistoryEntry | null)[] {
-  if (history.length >= MAX_HISTORY) return history.slice(-MAX_HISTORY);
-  const padding: null[] = Array.from({ length: MAX_HISTORY - history.length }, () => null);
-  return [...padding, ...history];
-}
-
-function StatusTimeline({ history }: { history: (HistoryEntry | null)[] }) {
-  const [tooltip, setTooltip] = useState<{ x: number; entry: HistoryEntry } | null>(null);
-
-  return (
-    <div className="cw-timeline-container">
-      <div className="cw-timeline-bar">
-        {history.map((entry, i) => (
-          <div
-            key={i}
-            className="cw-timeline-segment"
-            style={{
-              backgroundColor: entry ? statusColor(entry.status) : '#21262d',
-            }}
-            onMouseEnter={(e) => {
-              if (entry) {
-                const rect = (e.target as HTMLElement).getBoundingClientRect();
-                const container = (e.target as HTMLElement).parentElement!.getBoundingClientRect();
-                setTooltip({ x: rect.left - container.left + rect.width / 2, entry });
-              }
-            }}
-            onMouseLeave={() => setTooltip(null)}
-          />
-        ))}
-      </div>
-      {tooltip && (
-        <div className="cw-tooltip" style={{ left: `${tooltip.x}px` }}>
-          <span className="cw-tooltip-status" style={{ color: statusColor(tooltip.entry.status) }}>
-            {statusLabel(tooltip.entry.status)}
-          </span>
-          <span className="cw-tooltip-time">{formatTimeShort(tooltip.entry.timestamp)}</span>
-          <span className="cw-tooltip-ms">{tooltip.entry.responseTimeMs}ms</span>
-        </div>
-      )}
-      <div className="cw-timeline-labels">
-        <span>24h ago</span>
-        <span>Now</span>
-      </div>
-    </div>
-  );
-}
-
-function ResponseSparkline({
-  history,
-  maxResponseTime,
-}: {
-  history: (HistoryEntry | null)[];
-  maxResponseTime: number;
-}) {
-  const [tooltip, setTooltip] = useState<{ x: number; entry: HistoryEntry } | null>(null);
-
-  return (
-    <div className="cw-sparkline-container">
-      <div className="cw-sparkline-bar">
-        {history.map((entry, i) => {
-          const height = entry
-            ? Math.max((entry.responseTimeMs / maxResponseTime) * 100, 2)
-            : 0;
-          return (
-            <div
-              key={i}
-              className="cw-sparkline-segment"
-              onMouseEnter={(e) => {
-                if (entry) {
-                  const rect = (e.target as HTMLElement).getBoundingClientRect();
-                  const container = (e.target as HTMLElement).parentElement!.getBoundingClientRect();
-                  setTooltip({ x: rect.left - container.left + rect.width / 2, entry });
-                }
-              }}
-              onMouseLeave={() => setTooltip(null)}
-            >
-              <div
-                className="cw-sparkline-fill"
-                style={{
-                  height: `${height}%`,
-                  backgroundColor: entry ? statusColor(entry.status) : 'transparent',
-                }}
-              />
+        <section className="summary" aria-label="Fleet summary">
+          <div className="verdict">
+            <div className="headline">
+              <span className={`dot ${verdictTone}`} />
+              {counts.down > 0
+                ? `${counts.down} check${counts.down === 1 ? '' : 's'} down`
+                : counts.warn > 0
+                  ? `${counts.warn} check${counts.warn === 1 ? '' : 's'} degraded`
+                  : rows.length === 0
+                    ? 'No checks yet'
+                    : 'All checks healthy'}
             </div>
-          );
-        })}
+            <div className="sub">
+              {worstDown
+                ? `${worstDown.name} · down ${formatDuration(Date.now() - Date.parse(worstDown.downSince!))}`
+                : `Across ${rows.length} check${rows.length === 1 ? '' : 's'}`}
+            </div>
+          </div>
+
+          <div className="fleet">
+            <div className="fleetbar" role="img" aria-label="Estate health">
+              {TONES.map((key) =>
+                counts[key] > 0 ? (
+                  <span
+                    key={key}
+                    className={`s-${key}`}
+                    style={{ width: `${(counts[key] / Math.max(1, rows.length)) * 100}%` }}
+                  />
+                ) : null,
+              )}
+            </div>
+            <div className="legend">
+              {TONES.map((key) => (
+                <i key={key}>
+                  <span className={`dot ${key}`} />
+                  {LABEL[key === 'ok' ? 'healthy' : key === 'warn' ? 'degraded' : 'unhealthy']}{' '}
+                  <b>{counts[key]}</b>
+                </i>
+              ))}
+            </div>
+          </div>
+
+          <div className="stat">
+            <span className="k">Uptime 24h</span>
+            <span className="v">{fleetUptime === null ? '—' : `${fleetUptime.toFixed(1)}%`}</span>
+          </div>
+          <div className="stat">
+            <span className="k">p95 latency</span>
+            <span className="v">
+              {fleetP95 === null ? '—' : fleetP95}
+              {fleetP95 !== null && <small>ms</small>}
+            </span>
+          </div>
+        </section>
+
+        <div className="toolbar">
+          <input
+            className="search"
+            type="search"
+            placeholder="Filter by name, URL or tag"
+            aria-label="Filter checks"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          <div className="chips" role="group" aria-label="Filter by status">
+            {TONES.map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={`chip st-${key}`}
+                aria-pressed={statusFilter.has(key)}
+                onClick={() => toggle(statusFilter, key, setStatusFilter)}
+              >
+                <span className={`dot ${key}`} />
+                {LABEL[key === 'ok' ? 'healthy' : key === 'warn' ? 'degraded' : 'unhealthy']}
+                <span className="n">{counts[key]}</span>
+              </button>
+            ))}
+          </div>
+          <div className="chips" role="group" aria-label="Filter by tag">
+            {tags.map((tag) => (
+              <button
+                key={tag}
+                type="button"
+                className="chip"
+                aria-pressed={tagFilter.has(tag)}
+                onClick={() => toggle(tagFilter, tag, setTagFilter)}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+          {hasFilters && (
+            <button
+              type="button"
+              className="chip clear"
+              onClick={() => {
+                setQuery('');
+                setStatusFilter(new Set());
+                setTagFilter(new Set());
+              }}
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+
+        <div className="tablewrap">
+          <table>
+            <thead>
+              <tr>
+                <th className="sev" aria-label="Severity" />
+                <th>Check</th>
+                <th>Status</th>
+                <th style={{ minWidth: 220 }}>Recent runs</th>
+                <th className="num">Uptime</th>
+                <th className="num">Latency</th>
+                <th className="num">Last run</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map((row) => {
+                const results = history[row.id] ?? [];
+                const uptime = uptimePercent(results);
+                return (
+                  <tr
+                    key={row.id}
+                    className={`st-${tone(row.status)}${row.enabled ? '' : ' disabled'}`}
+                    tabIndex={0}
+                    aria-selected={selected === row.id}
+                    onClick={() => setSelected(row.id)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        setSelected(row.id);
+                      }
+                    }}
+                  >
+                    <td className="sev" />
+                    <td>
+                      <div className="name">{row.name}</div>
+                      <span className="url">{row.url}</span>
+                    </td>
+                    <td>
+                      <span className={`pill ${tone(row.status)}`}>{LABEL[row.status]}</span>
+                    </td>
+                    <td>
+                      <TickStrip results={results} onTip={onTip} />
+                      {results.length > 0 && (
+                        <div className="tickscale">
+                          <span>{clockTime(results[0].ranAt)}</span>
+                          <span>now</span>
+                        </div>
+                      )}
+                    </td>
+                    <td className="num">
+                      {uptime === null ? <span className="weak">—</span> : <>{uptime.toFixed(1)}<span className="weak">%</span></>}
+                    </td>
+                    <td className="num">
+                      {row.lastResponseMs === null ? (
+                        <span className="weak">—</span>
+                      ) : (
+                        <>
+                          {row.lastResponseMs}
+                          <span className="weak">ms</span>
+                        </>
+                      )}
+                    </td>
+                    <td className="num">
+                      <span className="weak">{timeAgo(row.lastCheckAt)}</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+
+          {!loading && visible.length === 0 && (
+            <div className="empty">
+              {rows.length === 0 ? (
+                <>
+                  No checks yet. Add one with <code>POST /api/checks</code>, or see{' '}
+                  <a href="api/agent.md">the API guide</a>.
+                </>
+              ) : (
+                'No checks match that filter.'
+              )}
+            </div>
+          )}
+        </div>
+
+        {deliveries.length > 0 && (
+          <div className="notifiers" aria-label="Notifier health">
+            {deliveries.map((delivery) => (
+              <span
+                key={delivery.notifier}
+                className={`notifier${delivery.ok ? '' : ' failed'}`}
+                title={delivery.error ?? undefined}
+              >
+                <span className={`dot ${delivery.ok ? 'ok' : 'down'}`} />
+                <span className="who">{delivery.notifier}</span>
+                <span className="when">
+                  {delivery.ok ? 'delivered' : `failed after ${delivery.attempts}×`} ·{' '}
+                  {timeAgo(delivery.deliveredAt)}
+                </span>
+              </span>
+            ))}
+          </div>
+        )}
       </div>
-      {tooltip && (
-        <div className="cw-tooltip" style={{ left: `${tooltip.x}px` }}>
-          <span className="cw-tooltip-ms">{tooltip.entry.responseTimeMs}ms</span>
-          <span className="cw-tooltip-time">{formatTimeShort(tooltip.entry.timestamp)}</span>
+
+      <div className="sr" aria-live="polite" ref={liveRef} />
+      {tip && (
+        <div className="tip show" style={{ left: tip.x, top: tip.y }}>
+          {tip.text}
         </div>
       )}
-    </div>
+
+      <Drawer
+        row={selectedRow}
+        results={selectedRow ? (history[selectedRow.id] ?? []) : []}
+        onClose={() => setSelected(null)}
+      />
+    </>
   );
 }

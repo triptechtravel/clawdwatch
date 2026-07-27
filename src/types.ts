@@ -1,20 +1,20 @@
 /**
- * Types for clawdwatch v2 synthetic monitoring system
+ * clawdwatch v3 — public contracts.
  *
- * v2 changes:
- * - Checks loaded from D1 (not static array)
- * - History stored in Analytics Engine (not R2)
- * - R2 state simplified (no history array)
- * - Incidents tracked in D1
+ * Domain types are camelCase; D1 columns are snake_case. The mapping lives
+ * in engine/store/d1.ts and nowhere else.
+ *
+ * Two invariants hold throughout:
+ *   1. Secret VALUES never appear in a CheckConfig, an AlertEvent, an API
+ *      response, or a log. Only references (`${NAME}`). See engine/secrets.ts.
+ *   2. Response bodies are never persisted or emitted — only assertion
+ *      failure messages, truncated.
  */
 
-export type CheckType = 'api' | 'browser';
+// ── Assertions ──────────────────────────────────────────────────────────
 
-export type CheckStatus = 'unknown' | 'healthy' | 'degraded' | 'unhealthy';
-
-// ── Assertions ──
-
-export type AssertionOperator = 'is' | 'isNot' | 'contains' | 'notContains' | 'matches' | 'lessThan' | 'greaterThan';
+export type StringOperator = 'is' | 'isNot' | 'contains' | 'notContains' | 'matches';
+export type NumericOperator = 'lessThan' | 'greaterThan';
 
 export interface StatusCodeAssertion {
   type: 'statusCode';
@@ -25,7 +25,7 @@ export interface StatusCodeAssertion {
 export interface HeaderAssertion {
   type: 'header';
   name: string;
-  operator: 'is' | 'isNot' | 'contains' | 'notContains' | 'matches';
+  operator: StringOperator;
   value: string;
 }
 
@@ -44,7 +44,7 @@ export interface ResponseTimeAssertion {
 export interface JsonPathAssertion {
   type: 'jsonPath';
   path: string;
-  operator: 'is' | 'isNot' | 'contains' | 'notContains' | 'matches' | 'lessThan' | 'greaterThan';
+  operator: StringOperator | NumericOperator;
   value: string;
 }
 
@@ -55,174 +55,221 @@ export type Assertion =
   | ResponseTimeAssertion
   | JsonPathAssertion;
 
-// ── Check Config (matches D1 schema) ──
+/** True when any assertion requires reading the response body. */
+export function needsBody(assertions: Assertion[]): boolean {
+  return assertions.some((a) => a.type === 'body' || a.type === 'jsonPath');
+}
+
+// ── Checks ──────────────────────────────────────────────────────────────
+
+export type CheckStatus = 'unknown' | 'healthy' | 'degraded' | 'unhealthy';
 
 export interface CheckConfig {
   id: string;
   name: string;
-  type: CheckType;
   url: string;
   method: string;
+  /** Values may contain `${SECRET_NAME}` references — never raw secrets. */
   headers: Record<string, string>;
   body: string | null;
   assertions: Assertion[];
-  retry_count: number;
-  retry_delay_ms: number;
-  timeout_ms: number;
-  failure_threshold: number;
+  retryCount: number;
+  retryDelayMs: number;
+  timeoutMs: number;
+  /** Consecutive failures before a check is declared unhealthy. */
+  failureThreshold: number;
+  /** Re-alert cadence while unhealthy. null disables reminders. */
+  reminderIntervalMs: number | null;
+  intervalMins: number;
   tags: string[];
-  group_id: string | null;
-  regions: string[];
-  interval_mins: number;
   enabled: boolean;
 }
 
-/** Raw row from D1 checks table (JSON columns are strings) */
-export interface CheckRow {
-  id: string;
-  name: string;
-  type: string;
-  url: string;
-  method: string;
-  headers: string;
-  body: string | null;
-  assertions: string;
-  retry_count: number;
-  retry_delay_ms: number;
-  timeout_ms: number;
-  failure_threshold: number;
-  tags: string;
-  group_id: string | null;
-  regions: string;
-  interval_mins: number;
-  enabled: number;
-  created_at: string;
-  updated_at: string;
-}
-
-// ── R2 State (simplified — no history) ──
-
+/** Per-check hot state driving the alert machine. */
 export interface CheckState {
+  checkId: string;
   status: CheckStatus;
   consecutiveFailures: number;
-  lastCheck: string | null;
-  lastSuccess: string | null;
+  lastCheckAt: string | null;
+  lastSuccessAt: string | null;
   lastError: string | null;
-  responseTimeMs: number | null;
+  lastResponseMs: number | null;
+  /** Set when the check first went unhealthy; cleared on recovery. */
+  downSince: string | null;
+  /** Drives reminder scheduling. */
+  lastAlertAt: string | null;
+  /** Open incident id, if any. */
+  incidentId: string | null;
 }
-
-export interface MonitoringState {
-  checks: Record<string, CheckState>;
-  lastRun: string | null;
-}
-
-// ── Check Results ──
 
 export interface CheckResult {
-  id: string;
+  checkId: string;
   success: boolean;
   statusCode: number | null;
   responseTimeMs: number;
+  /** Assertion failure summary — never a response body. */
   error: string | null;
+  ranAt: string;
 }
-
-// ── Alerts ──
-
-export type AlertType = 'failure' | 'recovery';
-
-export interface AlertPayload {
-  type: AlertType;
-  check: CheckConfig;
-  checkState: CheckState;
-  result: CheckResult;
-  timestamp: string;
-}
-
-// ── Incidents (D1) ──
 
 export interface Incident {
-  id: number;
-  check_id: string;
-  type: string;
-  started_at: string;
-  resolved_at: string | null;
-  duration_s: number | null;
-  trigger_error: string | null;
+  id: string;
+  checkId: string;
+  startedAt: string;
+  resolvedAt: string | null;
+  durationMs: number | null;
+  triggerError: string | null;
+  /** Optional triage note written by an agent or inline AI. */
+  annotation: string | null;
 }
-
-// ── Alert Rules (D1) ──
-
-export interface AlertRule {
-  id: number;
-  check_id: string | null;
-  group_id: string | null;
-  channel: string;
-  config: Record<string, unknown>;
-  on_failure: boolean;
-  on_recovery: boolean;
-  enabled: boolean;
-}
-
-// ── Maintenance Windows (D1) ──
 
 export interface MaintenanceWindow {
-  id: number;
-  check_id: string | null;
-  group_id: string | null;
-  starts_at: string;
-  ends_at: string;
+  id: string;
+  checkId: string | null;
+  tag: string | null;
+  startsAt: string;
+  endsAt: string;
   reason: string | null;
-  suppress_alerts: boolean;
-  skip_checks: boolean;
+  suppressAlerts: boolean;
+  skipChecks: boolean;
 }
 
-// ── Top-level Config ──
+// ── Alert events ────────────────────────────────────────────────────────
 
-export interface ClawdWatchOptions<TEnv> {
-  storage: {
-    getD1: (env: TEnv) => D1Database;
-    getR2: (env: TEnv) => R2Bucket;
-    getAnalyticsEngine?: (env: TEnv) => AnalyticsEngineDataset;
+export type AlertEventKind = 'opened' | 'recovered' | 'reminder' | 'summary';
 
-  };
-  defaults?: {
-    failureThreshold?: number;
-    timeoutMs?: number;
-    stateKey?: string;
-    userAgent?: string;
-  };
-  resolveUrl?: (url: string, env: TEnv) => string;
-  onAlert?: (alert: AlertPayload, env: TEnv) => Promise<void>;
-}
-
-// ── API Response Types ──
-
-export interface HistoryEntry {
-  timestamp: string;
-  status: CheckStatus;
-  responseTimeMs: number;
-  error: string | null;
-}
-
-export interface MonitoringCheckStatus {
+/** A check as seen by a notifier — no headers, no secrets. */
+export interface CheckSummary {
   id: string;
   name: string;
-  type: string;
   url: string;
   tags: string[];
   status: CheckStatus;
-  consecutiveFailures: number;
-  lastCheck: string | null;
-  lastSuccess: string | null;
-  lastError: string | null;
-  responseTimeMs: number | null;
-  history: HistoryEntry[];
-  uptimePercent: number | null;
-  enabled: boolean;
 }
 
-export interface MonitoringStatusResponse {
-  overall: 'healthy' | 'degraded' | 'unhealthy';
-  checks: MonitoringCheckStatus[];
-  lastRun: string | null;
+export interface FailureDetail {
+  statusCode: number | null;
+  responseTimeMs: number;
+  /** Assertion failure messages, each already truncated. */
+  assertions: string[];
+  consecutiveFailures: number;
 }
+
+/**
+ * Self-describing affordances. Action links are short-lived signed URLs so a
+ * receiving agent can act without standing credentials.
+ */
+export interface AlertLinks {
+  incident?: string;
+  ack?: string;
+  annotate?: string;
+  runNow?: string;
+  maintenance?: string;
+  capabilities?: string;
+}
+
+export type AlertEvent =
+  | {
+      kind: 'opened';
+      at: string;
+      check: CheckSummary;
+      failure: FailureDetail;
+      incidentId: string;
+      links: AlertLinks;
+    }
+  | {
+      kind: 'recovered';
+      at: string;
+      check: CheckSummary;
+      downtimeMs: number;
+      incidentId: string;
+      links: AlertLinks;
+    }
+  | {
+      kind: 'reminder';
+      at: string;
+      check: CheckSummary;
+      failure: FailureDetail;
+      downSinceMs: number;
+      incidentId: string;
+      links: AlertLinks;
+    }
+  | {
+      kind: 'summary';
+      at: string;
+      opened: CheckSummary[];
+      recovered: CheckSummary[];
+      stillDown: CheckSummary[];
+      allClear: boolean;
+      totalChecks: number;
+      links: AlertLinks;
+    };
+
+// ── Notifiers ───────────────────────────────────────────────────────────
+
+export interface NotifierContext<TEnv = unknown> {
+  env: TEnv;
+  /** Resolves `${NAME}` references in notifier config (webhook URLs etc.). */
+  resolve: (template: string) => string;
+}
+
+export interface Notifier<TEnv = unknown> {
+  name: string;
+  /** Event kinds this notifier wants. Defaults to all. */
+  on?: AlertEventKind[];
+  notify(event: AlertEvent, ctx: NotifierContext<TEnv>): Promise<void>;
+}
+
+// ── Secrets ─────────────────────────────────────────────────────────────
+
+export type SecretMap = Record<string, string | undefined>;
+
+/** Attach extra headers to checks whose URL host matches. */
+export interface HeaderRule {
+  /** Exact host string, or a pattern tested against the URL host. */
+  host: string | RegExp;
+  /** Values may contain `${SECRET_NAME}` references. */
+  headers: Record<string, string>;
+}
+
+// ── Top-level options ───────────────────────────────────────────────────
+
+export interface ClawdWatchDefaults {
+  failureThreshold?: number;
+  timeoutMs?: number;
+  retryCount?: number;
+  retryDelayMs?: number;
+  reminderIntervalMs?: number | null;
+  intervalMins?: number;
+  userAgent?: string;
+  /** Max checks executed concurrently per run. */
+  concurrency?: number;
+  /** Hours of check_results retained. */
+  historyRetentionHours?: number;
+}
+
+export interface ClawdWatchOptions<TEnv> {
+  d1: (env: TEnv) => D1Database;
+  /** API authorization. Omit and writes are refused with 403. */
+  auth?: (env: TEnv) => import('./auth').AuthConfig;
+  /** Secret values, keyed by the name used in `${NAME}` references. */
+  secrets?: (env: TEnv) => SecretMap;
+  headerRules?: HeaderRule[];
+  resolveUrl?: (url: string, env: TEnv) => string;
+  notifiers?: Notifier<TEnv>[];
+  /** Public base URL, used to build AlertLinks. */
+  baseUrl?: (env: TEnv) => string;
+  defaults?: ClawdWatchDefaults;
+}
+
+export const DEFAULTS = {
+  failureThreshold: 3,
+  timeoutMs: 10_000,
+  retryCount: 1,
+  retryDelayMs: 5_000,
+  reminderIntervalMs: 60 * 60 * 1000 as number | null,
+  intervalMins: 5,
+  userAgent: 'clawdwatch/3.0',
+  concurrency: 6,
+  historyRetentionHours: 48,
+};

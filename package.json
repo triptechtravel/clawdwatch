@@ -1,7 +1,7 @@
 {
   "name": "clawdwatch",
-  "version": "0.1.1",
-  "description": "Synthetic monitoring for Cloudflare Workers — health checks, state machine alerts, and an embedded dashboard",
+  "version": "0.2.0",
+  "description": "Synthetic monitoring for Cloudflare Workers \u2014 deterministic detection, pluggable alerting, and an embedded dashboard",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,21 +12,25 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "migrations",
+    "README.md",
+    "SECURITY.md"
   ],
   "scripts": {
     "build:dashboard": "vite build --config vite.dashboard.config.ts",
     "build:inline": "tsx scripts/inline-assets.ts",
     "build:server": "tsup",
     "build": "npm run build:dashboard && npm run build:inline && npm run build:server",
-    "typecheck:examples": "tsc -p examples/tsconfig.json",
-    "test": "vitest run && npm run typecheck:examples",
+    "test": "npm run test:unit && npm run test:integration",
     "test:watch": "vitest",
     "lint": "oxlint src/",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test:unit": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts"
   },
   "keywords": [
     "cloudflare",
@@ -34,8 +38,11 @@
     "monitoring",
     "uptime",
     "synthetic",
+    "healthcheck",
     "alerts",
-    "hono"
+    "d1",
+    "hono",
+    "status-page"
   ],
   "repository": {
     "type": "git",
@@ -46,7 +53,8 @@
     "hono": ">=4.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250204.0",
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "@cloudflare/workers-types": "^5.20260727.1",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.0",
@@ -60,5 +68,13 @@
     "vite": "^6.1.0",
     "vitepress": "^1.6.4",
     "vitest": "^4.0.0"
-  }
+  },
+  "homepage": "https://triptechtravel.github.io/clawdwatch/",
+  "bugs": {
+    "url": "https://github.com/triptechtravel/clawdwatch/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "sideEffects": false
 }

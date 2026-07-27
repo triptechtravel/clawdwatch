@@ -1,216 +1,380 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createRoutes } from './index';
+import { describe, it, expect } from 'vitest';
+import { createRoutes, normaliseCheck } from './index';
+import { ROUTES, buildAgentDoc } from './agent-md';
+import { mintCapability } from '../auth';
+import type { CheckConfig, ClawdWatchOptions } from '../types';
 
-// Mock the db module
-vi.mock('../engine/db', () => ({
-  loadAllChecks: vi.fn().mockResolvedValue([]),
-  loadCheck: vi.fn().mockResolvedValue(null),
-  createCheck: vi.fn().mockResolvedValue(undefined),
-  updateCheck: vi.fn().mockResolvedValue(true),
-  deleteCheck: vi.fn().mockResolvedValue(true),
-  toggleCheck: vi.fn().mockResolvedValue(true),
-  listIncidents: vi.fn().mockResolvedValue([]),
-  loadAllAlertRules: vi.fn().mockResolvedValue([]),
-  createAlertRule: vi.fn().mockResolvedValue(1),
-  deleteAlertRule: vi.fn().mockResolvedValue(true),
-  listMaintenanceWindows: vi.fn().mockResolvedValue([]),
-  createMaintenanceWindow: vi.fn().mockResolvedValue(1),
-  deleteMaintenanceWindow: vi.fn().mockResolvedValue(true),
-}));
+/**
+ * An in-memory stand-in for D1: enough SQL awareness to exercise the routes.
+ * Real SQL is covered by the miniflare integration suite.
+ */
+function fakeDb(seed: CheckConfig[] = []) {
+  const checks = new Map<string, CheckConfig>(seed.map((c) => [c.id, c]));
+  const annotations = new Map<string, string>();
 
-vi.mock('../engine/state', () => ({
-  loadState: vi.fn().mockResolvedValue({ checks: {}, lastRun: null }),
-}));
+  const stmt = (sql: string, binds: unknown[] = []): D1PreparedStatement =>
+    ({
+      bind: (...b: unknown[]) => stmt(sql, b),
+      async first() {
+        if (sql.includes('FROM checks WHERE id')) {
+          const found = checks.get(String(binds[0]));
+          return found ? toRow(found) : null;
+        }
+        return null;
+      },
+      async all() {
+        if (sql.includes('FROM checks')) {
+          return { results: [...checks.values()].map(toRow) };
+        }
+        return { results: [] };
+      },
+      async run() {
+        if (sql.startsWith('INSERT INTO checks')) {
+          const c = fromBinds(binds);
+          checks.set(c.id, c);
+        }
+        if (sql.startsWith('UPDATE incidents SET annotation')) {
+          annotations.set(String(binds[1]), String(binds[0]));
+        }
+        return { success: true };
+      },
+    }) as unknown as D1PreparedStatement;
 
-vi.mock('../engine/runner', () => ({
-  runCheck: vi.fn().mockResolvedValue({ id: 'test', success: true, statusCode: 200, responseTimeMs: 50, error: null }),
-}));
-
-import {
-  loadAllAlertRules,
-  createAlertRule,
-  deleteAlertRule,
-  listMaintenanceWindows,
-  createMaintenanceWindow,
-  deleteMaintenanceWindow,
-} from '../engine/db';
-
-const mockD1 = {} as D1Database;
-const mockBucket = {} as R2Bucket;
-
-function createTestApp() {
-  return createRoutes({
-    stateKey: 'clawdwatch/state.json',
-    userAgent: 'clawdwatch/test',
-    getD1: () => mockD1,
-    getBucket: () => mockBucket,
-  });
+  return {
+    db: {
+      prepare: (sql: string) => stmt(sql),
+      batch: async () => [],
+    } as unknown as D1Database,
+    checks,
+    annotations,
+  };
 }
 
-describe('routes', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+function toRow(c: CheckConfig) {
+  return {
+    id: c.id,
+    name: c.name,
+    url: c.url,
+    method: c.method,
+    headers: JSON.stringify(c.headers),
+    body: c.body,
+    assertions: JSON.stringify(c.assertions),
+    retry_count: c.retryCount,
+    retry_delay_ms: c.retryDelayMs,
+    timeout_ms: c.timeoutMs,
+    failure_threshold: c.failureThreshold,
+    reminder_interval_ms: c.reminderIntervalMs,
+    interval_mins: c.intervalMins,
+    tags: JSON.stringify(c.tags),
+    enabled: c.enabled ? 1 : 0,
+  };
+}
+
+function fromBinds(b: unknown[]): CheckConfig {
+  return {
+    id: String(b[0]),
+    name: String(b[1]),
+    url: String(b[2]),
+    method: String(b[3]),
+    headers: JSON.parse(String(b[4])),
+    body: b[5] as string | null,
+    assertions: JSON.parse(String(b[6])),
+    retryCount: Number(b[7]),
+    retryDelayMs: Number(b[8]),
+    timeoutMs: Number(b[9]),
+    failureThreshold: Number(b[10]),
+    reminderIntervalMs: b[11] as number | null,
+    intervalMins: Number(b[12]),
+    tags: JSON.parse(String(b[13])),
+    enabled: b[14] === 1,
+  };
+}
+
+function check(overrides: Partial<CheckConfig> = {}): CheckConfig {
+  return {
+    id: 'c1',
+    name: 'Check',
+    url: 'https://api.example.com/health',
+    method: 'GET',
+    headers: {},
+    body: null,
+    assertions: [],
+    retryCount: 1,
+    retryDelayMs: 0,
+    timeoutMs: 5000,
+    failureThreshold: 3,
+    reminderIntervalMs: null,
+    intervalMins: 5,
+    tags: [],
+    enabled: true,
+    ...overrides,
+  };
+}
+
+const SECRETS = { HEALTHCHECK_SECRET: 'hc-super-secret-value' };
+
+interface Env {
+  DB: D1Database;
+}
+
+function app(
+  dbHandle: D1Database,
+  authOverrides: Parameters<typeof createRoutes>[0]['auth'] = {},
+) {
+  const options: ClawdWatchOptions<Env> = {
+    d1: (env) => env.DB,
+    secrets: () => SECRETS,
+    baseUrl: () => 'https://mon.example.com',
+  };
+  return createRoutes<Env>({ options, auth: authOverrides });
+}
+
+function req(path: string, init: RequestInit = {}) {
+  return new Request(`https://mon.example.com${path}`, init);
+}
+
+describe('normaliseCheck', () => {
+  it('fills defaults for a new check', () => {
+    const c = normaliseCheck({ id: 'x', name: 'X', url: 'https://x.test' });
+    expect(c.method).toBe('GET');
+    expect(c.failureThreshold).toBe(3);
+    expect(c.enabled).toBe(true);
   });
 
-  // ── Alert Rules ──
+  it('merges a partial update onto the existing check', () => {
+    const existing = check({ timeoutMs: 9999, name: 'Original' });
+    const c = normaliseCheck({ timeoutMs: 1000 }, existing);
+    expect(c.timeoutMs).toBe(1000);
+    expect(c.name).toBe('Original');
+  });
+});
 
-  describe('GET /api/alert-rules', () => {
-    it('returns alert rules', async () => {
-      const rules = [{ id: 1, channel: 'gateway', config: {}, on_failure: true, on_recovery: true, enabled: true, check_id: null, group_id: null }];
-      vi.mocked(loadAllAlertRules).mockResolvedValueOnce(rules);
+describe('reads', () => {
+  it('reports overall status', async () => {
+    const { db } = fakeDb([check(), check({ id: 'c2', name: 'Two' })]);
+    const res = await app(db).fetch(req('/api/status'), { DB: db });
+    const body = await res.json();
+    expect(res.status).toBe(200);
+    expect(body.checks).toHaveLength(2);
+    expect(body.overall).toBe('healthy');
+  });
 
-      const app = createTestApp();
-      const res = await app.request('/api/alert-rules');
+  it('redacts secrets when listing checks', async () => {
+    const { db } = fakeDb([check({ headers: { 'X-Key': 'hc-super-secret-value' } })]);
+    const res = await app(db).fetch(req('/api/checks'), { DB: db });
+    const text = await res.text();
+    expect(text).not.toContain('hc-super-secret-value');
+    expect(text).toContain('${HEALTHCHECK_SECRET}');
+  });
 
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.alertRules).toEqual(rules);
+  it('404s an unknown check', async () => {
+    const { db } = fakeDb();
+    const res = await app(db).fetch(req('/api/checks/nope'), { DB: db });
+    expect(res.status).toBe(404);
+  });
+
+  it('exports config with references intact', async () => {
+    const { db } = fakeDb([check({ headers: { 'X-Key': '${HEALTHCHECK_SECRET}' } })]);
+    const res = await app(db).fetch(req('/api/config'), { DB: db });
+    const body = await res.json();
+    expect(body.version).toBe(3);
+    expect(body.checks[0].headers['X-Key']).toBe('${HEALTHCHECK_SECRET}');
+  });
+});
+
+describe('authz matrix', () => {
+  const write = { method: 'POST', body: JSON.stringify(check({ id: 'new' })) };
+
+  it('rejects a write with no credentials', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, { teamDomain: 't', aud: 'a' }).fetch(req('/api/checks', write), {
+      DB: db,
     });
+    expect(res.status).toBe(401);
   });
 
-  describe('POST /api/alert-rules', () => {
-    it('creates an alert rule', async () => {
-      vi.mocked(createAlertRule).mockResolvedValueOnce(42);
+  it('rejects a write when Access is not configured', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, {}).fetch(req('/api/checks', write), { DB: db });
+    expect(res.status).toBe(403);
+  });
 
-      const app = createTestApp();
-      const res = await app.request('/api/alert-rules', {
+  it('allows a write in dev mode', async () => {
+    const { db, checks } = fakeDb();
+    const res = await app(db, { devMode: true }).fetch(req('/api/checks', write), { DB: db });
+    expect(res.status).toBe(201);
+    expect(checks.has('new')).toBe(true);
+  });
+
+  it('leaves reads open', async () => {
+    const { db } = fakeDb([check()]);
+    const res = await app(db, { teamDomain: 't', aud: 'a' }).fetch(req('/api/status'), { DB: db });
+    expect(res.status).toBe(200);
+  });
+
+  it('accepts a valid capability link for its own scope', async () => {
+    const { db, annotations } = fakeDb();
+    const cap = await mintCapability('cap-secret', 'annotate:inc-1', Date.now() + 60_000);
+    const res = await app(db, { capabilitySecret: 'cap-secret' }).fetch(
+      req(`/api/incidents/inc-1/annotate?cap=${cap}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel: 'slack', config: { webhook: 'https://hooks.slack.com/...' } }),
-      });
+        body: JSON.stringify({ annotation: 'deploy correlation' }),
+      }),
+      { DB: db },
+    );
+    expect(res.status).toBe(200);
+    expect(annotations.get('inc-1')).toBe('deploy correlation');
+  });
 
-      expect(res.status).toBe(201);
-      const body = await res.json();
-      expect(body).toEqual({ ok: true, id: 42 });
-      expect(createAlertRule).toHaveBeenCalledWith(mockD1, {
-        channel: 'slack',
-        config: { webhook: 'https://hooks.slack.com/...' },
-      });
-    });
-
-    it('rejects when channel is missing', async () => {
-      const app = createTestApp();
-      const res = await app.request('/api/alert-rules', {
+  it('refuses a capability link minted for a different incident', async () => {
+    const { db } = fakeDb();
+    const cap = await mintCapability('cap-secret', 'annotate:inc-OTHER', Date.now() + 60_000);
+    const res = await app(db, { capabilitySecret: 'cap-secret' }).fetch(
+      req(`/api/incidents/inc-1/annotate?cap=${cap}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ config: {} }),
-      });
-
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toBe('channel is required');
-    });
+        body: JSON.stringify({ annotation: 'nope' }),
+      }),
+      { DB: db },
+    );
+    expect(res.status).toBe(403);
   });
 
-  describe('DELETE /api/alert-rules/:id', () => {
-    it('deletes an alert rule', async () => {
-      vi.mocked(deleteAlertRule).mockResolvedValueOnce(true);
-
-      const app = createTestApp();
-      const res = await app.request('/api/alert-rules/5', { method: 'DELETE' });
-
-      expect(res.status).toBe(200);
-      expect(deleteAlertRule).toHaveBeenCalledWith(mockD1, 5);
-    });
-
-    it('returns 404 when rule not found', async () => {
-      vi.mocked(deleteAlertRule).mockResolvedValueOnce(false);
-
-      const app = createTestApp();
-      const res = await app.request('/api/alert-rules/999', { method: 'DELETE' });
-
-      expect(res.status).toBe(404);
-    });
+  it('refuses an expired capability link', async () => {
+    const { db } = fakeDb();
+    const cap = await mintCapability('cap-secret', 'ack:inc-1', Date.now() - 1000);
+    const res = await app(db, { capabilitySecret: 'cap-secret' }).fetch(
+      req(`/api/incidents/inc-1/ack?cap=${cap}`, { method: 'POST', body: '{}' }),
+      { DB: db },
+    );
+    expect(res.status).toBe(403);
   });
 
-  // ── Maintenance Windows ──
-
-  describe('GET /api/maintenance', () => {
-    it('returns maintenance windows', async () => {
-      const windows = [{
-        id: 1, check_id: null, group_id: null,
-        starts_at: '2026-02-09T00:00:00Z', ends_at: '2026-02-09T06:00:00Z',
-        reason: 'Deploy', suppress_alerts: true, skip_checks: false,
-      }];
-      vi.mocked(listMaintenanceWindows).mockResolvedValueOnce(windows);
-
-      const app = createTestApp();
-      const res = await app.request('/api/maintenance');
-
-      expect(res.status).toBe(200);
-      const body = await res.json();
-      expect(body.maintenanceWindows).toEqual(windows);
-    });
+  it('refuses a capability link with a tampered signature', async () => {
+    const { db } = fakeDb();
+    const cap = await mintCapability('cap-secret', 'ack:inc-1', Date.now() + 60_000);
+    const tampered = cap.replace(/.$/, (ch) => (ch === 'a' ? 'b' : 'a'));
+    const res = await app(db, { capabilitySecret: 'cap-secret' }).fetch(
+      req(`/api/incidents/inc-1/ack?cap=${tampered}`, { method: 'POST', body: '{}' }),
+      { DB: db },
+    );
+    expect(res.status).toBe(403);
   });
+});
 
-  describe('POST /api/maintenance', () => {
-    it('creates a maintenance window', async () => {
-      vi.mocked(createMaintenanceWindow).mockResolvedValueOnce(7);
+describe('write validation', () => {
+  const dev = { devMode: true };
 
-      const app = createTestApp();
-      const res = await app.request('/api/maintenance', {
+  it('rejects a check carrying a literal secret', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, dev).fetch(
+      req('/api/checks', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(check({ id: 'leaky', headers: { k: 'hc-super-secret-value' } })),
+      }),
+      { DB: db },
+    );
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain('${HEALTHCHECK_SECRET}');
+  });
+
+  it('accepts a check using a reference', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, dev).fetch(
+      req('/api/checks', {
+        method: 'POST',
+        body: JSON.stringify(check({ id: 'ok', headers: { k: '${HEALTHCHECK_SECRET}' } })),
+      }),
+      { DB: db },
+    );
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects a missing id', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, dev).fetch(
+      req('/api/checks', { method: 'POST', body: JSON.stringify({ name: 'x', url: 'https://x' }) }),
+      { DB: db },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects an id with unsafe characters', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, dev).fetch(
+      req('/api/checks', { method: 'POST', body: JSON.stringify(check({ id: 'bad id/../x' })) }),
+      { DB: db },
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a duplicate id with 409', async () => {
+    const { db } = fakeDb([check({ id: 'dupe' })]);
+    const res = await app(db, dev).fetch(
+      req('/api/checks', { method: 'POST', body: JSON.stringify(check({ id: 'dupe' })) }),
+      { DB: db },
+    );
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects invalid JSON', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, dev).fetch(req('/api/checks', { method: 'POST', body: 'not json' }), {
+      DB: db,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('rejects a config import containing a literal secret', async () => {
+    const { db } = fakeDb();
+    const res = await app(db, dev).fetch(
+      req('/api/config', {
+        method: 'PUT',
         body: JSON.stringify({
-          starts_at: '2026-02-09T00:00:00Z',
-          ends_at: '2026-02-09T06:00:00Z',
-          reason: 'Deploy',
+          checks: [check({ id: 'leaky', headers: { k: 'hc-super-secret-value' } })],
         }),
-      });
+      }),
+      { DB: db },
+    );
+    expect(res.status).toBe(400);
+  });
+});
 
-      expect(res.status).toBe(201);
-      const body = await res.json();
-      expect(body).toEqual({ ok: true, id: 7 });
-      expect(createMaintenanceWindow).toHaveBeenCalledWith(mockD1, {
-        starts_at: '2026-02-09T00:00:00Z',
-        ends_at: '2026-02-09T06:00:00Z',
-        reason: 'Deploy',
-      });
-    });
-
-    it('rejects when starts_at is missing', async () => {
-      const app = createTestApp();
-      const res = await app.request('/api/maintenance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ends_at: '2026-02-09T06:00:00Z' }),
-      });
-
-      expect(res.status).toBe(400);
-      const body = await res.json();
-      expect(body.error).toBe('starts_at and ends_at are required');
-    });
-
-    it('rejects when ends_at is missing', async () => {
-      const app = createTestApp();
-      const res = await app.request('/api/maintenance', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ starts_at: '2026-02-09T00:00:00Z' }),
-      });
-
-      expect(res.status).toBe(400);
-    });
+describe('agent.md', () => {
+  it('is served as markdown with the deployment base URL', async () => {
+    const { db } = fakeDb();
+    const res = await app(db).fetch(req('/api/agent.md'), { DB: db });
+    expect(res.headers.get('Content-Type')).toContain('text/markdown');
+    const text = await res.text();
+    expect(text).toContain('https://mon.example.com/api/status');
   });
 
-  describe('DELETE /api/maintenance/:id', () => {
-    it('deletes a maintenance window', async () => {
-      vi.mocked(deleteMaintenanceWindow).mockResolvedValueOnce(true);
+  it('documents every route the app actually mounts', async () => {
+    // The drift guard. A new endpoint without a ROUTES entry fails here rather
+    // than silently going undocumented, which is how the previous skill file
+    // ended up describing a system that no longer existed.
+    const mounted = app(fakeDb().db).routes
+      .filter((r) => r.path.startsWith('/api/'))
+      .map((r) => `${r.method} ${r.path}`);
 
-      const app = createTestApp();
-      const res = await app.request('/api/maintenance/3', { method: 'DELETE' });
+    const documented = new Set(ROUTES.map((r) => `${r.method} ${r.path}`));
+    const undocumented = [...new Set(mounted)].filter((m) => !documented.has(m));
+    expect(undocumented).toEqual([]);
+  });
 
-      expect(res.status).toBe(200);
-      expect(deleteMaintenanceWindow).toHaveBeenCalledWith(mockD1, 3);
-    });
+  it('documents no route that does not exist', () => {
+    const mounted = new Set(
+      app(fakeDb().db)
+        .routes.filter((r) => r.path.startsWith('/api/'))
+        .map((r) => `${r.method} ${r.path}`),
+    );
+    const phantom = ROUTES.map((r) => `${r.method} ${r.path}`).filter((d) => !mounted.has(d));
+    expect(phantom).toEqual([]);
+  });
 
-    it('returns 404 when window not found', async () => {
-      vi.mocked(deleteMaintenanceWindow).mockResolvedValueOnce(false);
-
-      const app = createTestApp();
-      const res = await app.request('/api/maintenance/999', { method: 'DELETE' });
-
-      expect(res.status).toBe(404);
-    });
+  it('tells agents to use alert links before standing credentials', () => {
+    const doc = buildAgentDoc('https://mon.example.com');
+    expect(doc).toContain('links');
+    expect(doc).toContain('CF-Access-Client-Id');
+    expect(doc).toContain('${MY_API_KEY}');
   });
 });
