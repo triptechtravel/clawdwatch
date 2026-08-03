@@ -12,6 +12,9 @@ const OUT_FILE = join(import.meta.dirname, '..', 'src', 'dashboard-html.ts');
 // Read the built index.html
 let html = readFileSync(join(DIST_DIR, 'index.html'), 'utf-8');
 
+/** Asset contents that must survive embedding verbatim. */
+const inlined: Array<[string, string]> = [];
+
 // Find and inline CSS files
 const assetsDir = join(DIST_DIR, 'assets');
 try {
@@ -21,23 +24,54 @@ try {
     if (file.endsWith('.css')) {
       const css = readFileSync(join(assetsDir, file), 'utf-8');
       // Replace the <link> tag with inline <style>
+      // A replacer FUNCTION, not a string: in a replacement string `$&`,
+      // `$'` and `` $` `` are substitution patterns, and minified assets
+      // contain them. A string replacement silently splices parts of the
+      // surrounding HTML into the asset.
       html = html.replace(
         new RegExp(`<link[^>]*href="[^"]*${file}"[^>]*>`),
-        `<style>${css}</style>`,
+        () => `<style>${css}</style>`,
       );
+      inlined.push([file, css]);
     }
 
     if (file.endsWith('.js')) {
       const js = readFileSync(join(assetsDir, file), 'utf-8');
       // Replace the <script> tag with inline script
+      // See the note above: a replacer function, never a replacement string.
+      // The React bundle contains `$&`, which as a string replacement would
+      // insert the matched <script src=...></script> tag — closing the inline
+      // script early and dumping the rest of the bundle into the page as text.
       html = html.replace(
         new RegExp(`<script[^>]*src="[^"]*${file}"[^>]*></script>`),
-        `<script type="module">${js}</script>`,
+        () => `<script type="module">${js}</script>`,
       );
+      inlined.push([file, js]);
     }
   }
 } catch {
   // No assets dir means no CSS/JS to inline
+}
+
+// Guard the invariant this file exists to preserve: every asset is embedded
+// byte-for-byte. A single mangled character in the bundle renders the whole
+// dashboard as visible text, and no unit test in this repo would catch it —
+// only loading the deployed page would.
+//
+// Counting <script> tags is not a valid check: React's bundle contains the
+// literal string "<script><\/script>", so any naive tally is wrong.
+for (const [name, content] of inlined) {
+  if (!html.includes(content)) {
+    throw new Error(
+      `[inline-assets] ${name} was altered while being embedded. ` +
+        `This is almost always a replacement-string substitution ($&, $', $\`) ` +
+        `— use a replacer function.`,
+    );
+  }
+}
+
+if (/<(script|link)[^>]*(src|href)="[^"]*\/assets\//.test(html)) {
+  throw new Error('[inline-assets] An asset reference survived inlining — nothing was embedded.');
 }
 
 // Write as a TS module
