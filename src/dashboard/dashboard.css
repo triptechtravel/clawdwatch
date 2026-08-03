@@ -275,6 +275,8 @@ td.num .weak { color: var(--muted); }
 .notifier .when { color: var(--muted); }
 .notifier.failed { border-color: var(--down); background: var(--down-bg); }
 .notifier.failed .when { color: var(--down); }
+/* Stale: the last attempt is too old to be evidence, so it reads as unknown. */
+.notifier.stale .who { color: var(--muted); font-weight: 500; }
 
 /* ── Drawer ─────────────────────────────────────────────────── */
 

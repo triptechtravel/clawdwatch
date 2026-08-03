@@ -29,6 +29,7 @@ import {
   listChecks,
   loadStates,
   openIncidentStatement,
+  pruneDeliveries,
   pruneResults,
   resolveIncidentStatement,
   saveStateStatement,
@@ -215,6 +216,11 @@ export async function runMonitoringChecks(opts: RunOptions): Promise<RunReport> 
   if (writes.length > 0) await opts.db.batch(writes);
   await pruneResults(opts.db, opts.historyRetentionHours).catch((err) => {
     console.error('[clawdwatch] pruning check_results failed:', err);
+  });
+  // Delivery rows are written only when an alert fires, so this table is
+  // sparse but was never pruned at all — it grew for the life of the deploy.
+  await pruneDeliveries(opts.db, opts.historyRetentionHours).catch((err) => {
+    console.error('[clawdwatch] pruning notifier_deliveries failed:', err);
   });
 
   const at = new Date(now()).toISOString();

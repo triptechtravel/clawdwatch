@@ -397,4 +397,19 @@ describe('notifier deliveries', () => {
     await pruneDeliveries(env.DB, 48);
     expect(await countRows('notifier_deliveries')).toBe(1);
   });
+
+  it('keeps the newest row per notifier even when it is past retention', async () => {
+    // Alerts are sparse: a notifier quiet for longer than retention must not
+    // disappear from the dashboard, it must show as stale.
+    const old = new Date(Date.now() - 96 * 3600_000).toISOString();
+    await record('slack', false, new Date(Date.now() - 120 * 3600_000).toISOString());
+    await record('slack', false, old);
+
+    await pruneDeliveries(env.DB, 48);
+
+    expect(await countRows('notifier_deliveries')).toBe(1);
+    const latest = await latestDeliveries(env.DB);
+    expect(latest).toHaveLength(1);
+    expect(latest[0].deliveredAt).toBe(old);
+  });
 });

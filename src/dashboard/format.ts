@@ -23,6 +23,30 @@ export function tone(status: Status): 'ok' | 'warn' | 'down' | 'idle' {
   }
 }
 
+/**
+ * How long a delivery row stays evidence about a notifier.
+ *
+ * Rows are only written when an alert actually fires, so a quiet week leaves
+ * the last row — success or failure — sitting there looking current. Past this
+ * age it says nothing about whether the notifier works today.
+ */
+export const DELIVERY_STALE_MS = 24 * 3600_000;
+
+/**
+ * Tone for one notifier chip. `idle` means "we have not tried recently",
+ * which is distinct from both healthy and broken and must not render as red:
+ * a failure from six days ago otherwise pins the panel red until the next
+ * alert happens to fire, which may be never.
+ */
+export function deliveryTone(
+  delivery: { ok: boolean; deliveredAt: string },
+  now = Date.now(),
+): 'ok' | 'down' | 'idle' {
+  const at = Date.parse(delivery.deliveredAt);
+  if (Number.isNaN(at) || now - at >= DELIVERY_STALE_MS) return 'idle';
+  return delivery.ok ? 'ok' : 'down';
+}
+
 export function formatDuration(ms: number): string {
   const seconds = Math.floor(Math.max(0, ms) / 1000);
   const minutes = Math.floor(seconds / 60);

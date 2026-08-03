@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   LABEL,
   clockTime,
+  deliveryTone,
   formatDuration,
   percentile,
   timeAgo,
@@ -11,6 +12,31 @@ import {
 } from './format';
 
 const NOW = Date.parse('2026-07-27T13:00:00.000Z');
+
+describe('deliveryTone', () => {
+  const at = (msAgo: number) => new Date(NOW - msAgo).toISOString();
+
+  it('reflects a recent delivery outcome', () => {
+    expect(deliveryTone({ ok: true, deliveredAt: at(60_000) }, NOW)).toBe('ok');
+    expect(deliveryTone({ ok: false, deliveredAt: at(60_000) }, NOW)).toBe('down');
+  });
+
+  it('ages an old failure down to unknown rather than leaving it red', () => {
+    // The bug this guards: alerts are sparse, so a failure from days ago stayed
+    // "latest" and pinned the notifier red until the next alert happened to fire.
+    expect(deliveryTone({ ok: false, deliveredAt: at(6.5 * 86_400_000) }, NOW)).toBe('idle');
+    expect(deliveryTone({ ok: true, deliveredAt: at(6.5 * 86_400_000) }, NOW)).toBe('idle');
+  });
+
+  it('treats the 24h boundary as stale and anything under it as current', () => {
+    expect(deliveryTone({ ok: false, deliveredAt: at(24 * 3600_000 - 1) }, NOW)).toBe('down');
+    expect(deliveryTone({ ok: false, deliveredAt: at(24 * 3600_000) }, NOW)).toBe('idle');
+  });
+
+  it('does not claim health from an unparseable timestamp', () => {
+    expect(deliveryTone({ ok: true, deliveredAt: 'not-a-date' }, NOW)).toBe('idle');
+  });
+});
 
 describe('tone', () => {
   it('maps every status to a class token', () => {

@@ -456,7 +456,21 @@ export async function latestDeliveries(db: D1Database): Promise<DeliveryRow[]> {
   }));
 }
 
+/**
+ * Drop delivery history past the retention window, but always keep the newest
+ * row per notifier: alerts are sparse, so a notifier that has been quiet for
+ * longer than retention would otherwise vanish from the dashboard entirely.
+ * The dashboard ages a surviving old row down to "unknown" rather than
+ * treating it as current health.
+ */
 export async function pruneDeliveries(db: D1Database, retentionHours: number): Promise<void> {
   const cutoff = new Date(Date.now() - retentionHours * 3600_000).toISOString();
-  await db.prepare('DELETE FROM notifier_deliveries WHERE delivered_at < ?').bind(cutoff).run();
+  await db
+    .prepare(
+      `DELETE FROM notifier_deliveries
+       WHERE delivered_at < ?
+         AND id NOT IN (SELECT MAX(id) FROM notifier_deliveries GROUP BY notifier)`,
+    )
+    .bind(cutoff)
+    .run();
 }

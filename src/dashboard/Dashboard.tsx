@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import './dashboard.css';
 import { api, type DeliveryRow, type ResultRow, type StatusRow } from './api';
-import { LABEL, clockTime, formatDuration, percentile, timeAgo, tone, uptimePercent } from './format';
+import {
+  LABEL,
+  clockTime,
+  deliveryTone,
+  formatDuration,
+  percentile,
+  timeAgo,
+  tone,
+  uptimePercent,
+} from './format';
 import { TickStrip } from './TickStrip';
 import { Drawer } from './Drawer';
 
@@ -328,20 +337,32 @@ export function Dashboard() {
 
         {deliveries.length > 0 && (
           <div className="notifiers" aria-label="Notifier health">
-            {deliveries.map((delivery) => (
-              <span
-                key={delivery.notifier}
-                className={`notifier${delivery.ok ? '' : ' failed'}`}
-                title={delivery.error ?? undefined}
-              >
-                <span className={`dot ${delivery.ok ? 'ok' : 'down'}`} />
-                <span className="who">{delivery.notifier}</span>
-                <span className="when">
-                  {delivery.ok ? 'delivered' : `failed after ${delivery.attempts}×`} ·{' '}
-                  {timeAgo(delivery.deliveredAt)}
+            {deliveries.map((delivery) => {
+              const state = deliveryTone(delivery);
+              const stale = state === 'idle';
+              return (
+                <span
+                  key={delivery.notifier}
+                  className={`notifier${state === 'down' ? ' failed' : ''}${stale ? ' stale' : ''}`}
+                  title={
+                    stale
+                      ? 'No alerts have been delivered recently — this is the last attempt, not current health.'
+                      : (delivery.error ?? undefined)
+                  }
+                >
+                  <span className={`dot ${state}`} />
+                  <span className="who">{delivery.notifier}</span>
+                  <span className="when">
+                    {stale
+                      ? `last delivery ${delivery.ok ? 'ok' : 'failed'}`
+                      : delivery.ok
+                        ? 'delivered'
+                        : `failed after ${delivery.attempts}×`}{' '}
+                    · {timeAgo(delivery.deliveredAt)}
+                  </span>
                 </span>
-              </span>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
