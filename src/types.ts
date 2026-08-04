@@ -8,7 +8,10 @@
  *   1. Secret VALUES never appear in a CheckConfig, an AlertEvent, an API
  *      response, or a log. Only references (`${NAME}`). See engine/secrets.ts.
  *   2. Response bodies are never persisted or emitted — only assertion
- *      failure messages, truncated.
+ *      failure messages, truncated — UNLESS a check sets
+ *      `captureBodyOnFailure`, which stores a short scrubbed excerpt of a
+ *      FAILING response so an operator or agent can see why. Off by default,
+ *      per check, and never populated for a passing check.
  */
 
 // ── Assertions ──────────────────────────────────────────────────────────
@@ -83,6 +86,15 @@ export interface CheckConfig {
   intervalMins: number;
   tags: string[];
   enabled: boolean;
+  /**
+   * Opt in to capturing a short, secret-scrubbed excerpt of the response body
+   * when this check FAILS. Off by default: bodies may carry personal or
+   * sensitive data, so capturing one is a decision the check owner makes.
+   *
+   * A passing check never reads its body for this purpose. See
+   * `buildBodySnippet` in engine/secrets.ts for the scrubbing and cap.
+   */
+  captureBodyOnFailure: boolean;
 }
 
 /** Per-check hot state driving the alert machine. */
@@ -110,6 +122,11 @@ export interface CheckResult {
   /** Assertion failure summary — never a response body. */
   error: string | null;
   ranAt: string;
+  /**
+   * Scrubbed excerpt of a failing response body. Non-null only when the check
+   * set `captureBodyOnFailure`, the check failed, and the body was textual.
+   */
+  bodySnippet: string | null;
 }
 
 export interface Incident {
@@ -153,6 +170,11 @@ export interface FailureDetail {
   /** Assertion failure messages, each already truncated. */
   assertions: string[];
   consecutiveFailures: number;
+  /**
+   * Scrubbed excerpt of the failing response body, when the check opted in via
+   * `captureBodyOnFailure`. Absent otherwise — a receiver must not rely on it.
+   */
+  bodySnippet?: string | null;
 }
 
 /**
@@ -168,8 +190,24 @@ export interface AlertLinks {
   capabilities?: string;
 }
 
+/**
+ * Version of the alert payload on the wire.
+ *
+ * The compatibility rule, which receivers may rely on:
+ *   - Adding an OPTIONAL field does NOT bump this. `bodySnippet` was added
+ *     this way: an older receiver simply ignores it.
+ *   - Removing or renaming a field, or changing the meaning or type of one,
+ *     DOES bump it.
+ *
+ * A receiver should ignore fields it does not recognise, and must not hard
+ * fail on a version higher than it knows — degrade to what it can read. The
+ * alternative is that shipping clawdwatch breaks every agent pointed at it.
+ */
+export const ALERT_SCHEMA_VERSION = 1;
+
 export type AlertEvent =
   | {
+      schemaVersion: number;
       kind: 'opened';
       at: string;
       check: CheckSummary;
@@ -178,6 +216,7 @@ export type AlertEvent =
       links: AlertLinks;
     }
   | {
+      schemaVersion: number;
       kind: 'recovered';
       at: string;
       check: CheckSummary;
@@ -186,6 +225,7 @@ export type AlertEvent =
       links: AlertLinks;
     }
   | {
+      schemaVersion: number;
       kind: 'reminder';
       at: string;
       check: CheckSummary;
@@ -195,6 +235,7 @@ export type AlertEvent =
       links: AlertLinks;
     }
   | {
+      schemaVersion: number;
       kind: 'summary';
       at: string;
       opened: CheckSummary[];
@@ -246,6 +287,13 @@ export interface ClawdWatchDefaults {
   concurrency?: number;
   /** Hours of check_results retained. */
   historyRetentionHours?: number;
+  /**
+   * Fleet-wide default for `CheckConfig.captureBodyOnFailure`. Set this once
+   * to give every check diagnostic body capture; override per check to opt a
+   * sensitive endpoint back out. Ships off — turning it on is a deliberate
+   * choice about what your responses contain.
+   */
+  captureBodyOnFailure?: boolean;
 }
 
 export interface ClawdWatchOptions<TEnv> {
@@ -272,4 +320,5 @@ export const DEFAULTS = {
   userAgent: 'clawdwatch/3.0',
   concurrency: 6,
   historyRetentionHours: 48,
+  captureBodyOnFailure: false,
 };

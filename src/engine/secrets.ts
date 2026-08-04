@@ -165,6 +165,29 @@ export function truncateError(message: string): string {
 }
 
 /**
+ * Failing-response excerpts are capped well below the error cap's cousin: long
+ * enough for a JSON error payload or an HTML error title, short enough that it
+ * cannot become a bulk exfiltration channel.
+ */
+export const MAX_BODY_SNIPPET_LENGTH = 512;
+
+/**
+ * Turn a raw failing-response body into something safe to store and show.
+ *
+ * Order matters: scrub BEFORE truncating, so a secret straddling the cut is
+ * masked rather than half-printed. Whitespace is collapsed so an HTML error
+ * page reads as one line instead of forty. Returns null when nothing useful
+ * survives, so callers can treat "no snippet" uniformly.
+ */
+export function buildBodySnippet(raw: string, secrets: SecretMap): string | null {
+  const collapsed = scrub(raw, secrets).replace(/\s+/g, ' ').trim();
+  if (collapsed === '') return null;
+  return collapsed.length <= MAX_BODY_SNIPPET_LENGTH
+    ? collapsed
+    : `${collapsed.slice(0, MAX_BODY_SNIPPET_LENGTH - 1)}…`;
+}
+
+/**
  * The notifier/API view of a check: identity and routing only. Headers and
  * body are dropped entirely rather than masked — a notifier has no use for
  * them, and what is absent cannot leak.

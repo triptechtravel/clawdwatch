@@ -413,3 +413,65 @@ describe('notifier deliveries', () => {
     expect(latest[0].deliveredAt).toBe(old);
   });
 });
+
+describe('failure body capture', () => {
+  const SECRETS = {};
+
+  it('round-trips captureBodyOnFailure through the checks table', async () => {
+    const original = check({ id: 'cap', captureBodyOnFailure: true });
+    await upsertCheck(env.DB, original, SECRETS);
+    expect((await getCheck(env.DB, 'cap'))!.captureBodyOnFailure).toBe(true);
+
+    // And back off again — an update must be able to revoke capture.
+    await upsertCheck(env.DB, { ...original, captureBodyOnFailure: false }, SECRETS);
+    expect((await getCheck(env.DB, 'cap'))!.captureBodyOnFailure).toBe(false);
+  });
+
+  it('defaults to false for a check written before the column existed', async () => {
+    // Simulates a row inserted by 0001-era code: the column takes its default.
+    await env.DB.prepare(
+      `INSERT INTO checks (id, name, url, method, headers, body, assertions,
+         retry_count, retry_delay_ms, timeout_ms, failure_threshold,
+         reminder_interval_ms, interval_mins, tags, enabled)
+       VALUES ('legacy','Legacy','https://x.test','GET','{}',NULL,'[]',
+         0,0,5000,2,NULL,5,'[]',1)`,
+    ).run();
+
+    expect((await getCheck(env.DB, 'legacy'))!.captureBodyOnFailure).toBe(false);
+  });
+
+  it('round-trips a body snippet through check_results', async () => {
+    const snippet = '{"ok":false,"error":"Error with system Redis."}';
+    await env.DB.batch([
+      insertResultStatement(env.DB, {
+        checkId: 'c1',
+        success: false,
+        statusCode: 500,
+        responseTimeMs: 12,
+        error: 'Expected status 200, got 500',
+        ranAt: new Date().toISOString(),
+        bodySnippet: snippet,
+      }),
+    ]);
+
+    const [row] = await listResults(env.DB, 'c1');
+    expect(row.bodySnippet).toBe(snippet);
+  });
+
+  it('stores null when a result carries no snippet', async () => {
+    await env.DB.batch([
+      insertResultStatement(env.DB, {
+        checkId: 'c1',
+        success: true,
+        statusCode: 200,
+        responseTimeMs: 8,
+        error: null,
+        ranAt: new Date().toISOString(),
+        bodySnippet: null,
+      }),
+    ]);
+
+    const [row] = await listResults(env.DB, 'c1');
+    expect(row.bodySnippet).toBeNull();
+  });
+});

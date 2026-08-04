@@ -1,11 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import { dispatch } from './index';
 import type { AlertEvent, Notifier, NotifierContext } from '../types';
+import { ALERT_SCHEMA_VERSION } from '../types';
 
 const ctx: NotifierContext<unknown> = { env: {}, resolve: (t) => t };
 
 function opened(id = 'c1'): AlertEvent {
   return {
+    schemaVersion: ALERT_SCHEMA_VERSION,
     kind: 'opened',
     at: '2026-07-27T00:00:00.000Z',
     check: { id, name: id, url: 'https://x.test', tags: [], status: 'unhealthy' },
@@ -17,6 +19,7 @@ function opened(id = 'c1'): AlertEvent {
 
 function recovered(id = 'c1'): AlertEvent {
   return {
+    schemaVersion: ALERT_SCHEMA_VERSION,
     kind: 'recovered',
     at: '2026-07-27T00:05:00.000Z',
     check: { id, name: id, url: 'https://x.test', tags: [], status: 'healthy' },

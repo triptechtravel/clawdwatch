@@ -4,12 +4,19 @@
  *
  * Secret values exist only inside this module's call stack — they enter via
  * `buildRequestHeaders` and leave via `fetch`. Nothing they touch is returned:
- * a CheckResult carries only status, timing, and assertion messages.
+ * a CheckResult carries status, timing, and assertion messages, plus — only
+ * for a failing check that set `captureBodyOnFailure` — a body excerpt that
+ * has been through `buildBodySnippet` and so contains references, not values.
  */
 
 import type { CheckConfig, CheckResult, HeaderRule, SecretMap } from '../types';
 import { needsBody } from '../types';
-import { buildRequestHeaders, truncateError, UnresolvedSecretError } from './secrets';
+import {
+  buildBodySnippet,
+  buildRequestHeaders,
+  truncateError,
+  UnresolvedSecretError,
+} from './secrets';
 import { DEFAULT_ASSERTION, evaluateAssertions, readBodyCapped } from './assertions';
 
 export interface RunnerContext {
@@ -42,6 +49,8 @@ async function executeOnce(check: CheckConfig, ctx: RunnerContext): Promise<Chec
     checkId: check.id,
     responseTimeMs: Math.max(0, ctx.now() - started),
     ranAt: new Date(started).toISOString(),
+    // These paths never obtained a response, so there is no body to excerpt.
+    bodySnippet: null,
     ...partial,
   });
 
@@ -89,6 +98,8 @@ async function executeOnce(check: CheckConfig, ctx: RunnerContext): Promise<Chec
       responseTimeMs,
       error: failures.length > 0 ? truncateError(failures.join('; ')) : null,
       ranAt: new Date(started).toISOString(),
+      bodySnippet:
+        failures.length > 0 ? await captureSnippet(check, response, body, ctx.secrets) : null,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
@@ -100,6 +111,37 @@ async function executeOnce(check: CheckConfig, ctx: RunnerContext): Promise<Chec
     });
   } finally {
     clearTimeout(timer);
+  }
+}
+
+/** Content types whose bodies are worth showing a human. */
+const TEXTUAL = /^(?:text\/|application\/(?:json|xml|xhtml\+xml|javascript|problem\+json)|[^;]*\+json)/i;
+
+/**
+ * A short, scrubbed excerpt of a FAILING response, for checks that opted in.
+ *
+ * Reads the body only if an assertion did not already consume it — the stream
+ * is single-use, so re-reading would throw. Everything here is best-effort:
+ * a diagnostic nicety must never turn a clean check failure into a crash, so
+ * any error yields null.
+ */
+async function captureSnippet(
+  check: CheckConfig,
+  response: Response,
+  alreadyRead: string | null,
+  secrets: SecretMap,
+): Promise<string | null> {
+  if (!check.captureBodyOnFailure) return null;
+
+  const contentType = response.headers.get('content-type') ?? '';
+  // An absent content-type is treated as textual: many error paths omit it.
+  if (contentType !== '' && !TEXTUAL.test(contentType)) return null;
+
+  try {
+    const raw = alreadyRead ?? (await readBodyCapped(response));
+    return buildBodySnippet(raw, secrets);
+  } catch {
+    return null;
   }
 }
 

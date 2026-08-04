@@ -36,6 +36,7 @@ interface CheckRow {
   interval_mins: number;
   tags: string;
   enabled: number;
+  capture_body_on_failure: number | null;
 }
 
 interface StateRow {
@@ -78,6 +79,7 @@ export function rowToCheck(row: CheckRow): CheckConfig {
     intervalMins: row.interval_mins ?? DEFAULTS.intervalMins,
     tags: parseJson<string[]>(row.tags, []),
     enabled: row.enabled === 1,
+    captureBodyOnFailure: row.capture_body_on_failure === 1,
   };
 }
 
@@ -124,8 +126,9 @@ export async function upsertCheck(
       `INSERT INTO checks (
          id, name, url, method, headers, body, assertions,
          retry_count, retry_delay_ms, timeout_ms, failure_threshold,
-         reminder_interval_ms, interval_mins, tags, enabled, updated_at
-       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+         reminder_interval_ms, interval_mins, tags, enabled,
+         capture_body_on_failure, updated_at
+       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
        ON CONFLICT(id) DO UPDATE SET
          name=excluded.name, url=excluded.url, method=excluded.method,
          headers=excluded.headers, body=excluded.body, assertions=excluded.assertions,
@@ -134,6 +137,7 @@ export async function upsertCheck(
          reminder_interval_ms=excluded.reminder_interval_ms,
          interval_mins=excluded.interval_mins, tags=excluded.tags,
          enabled=excluded.enabled,
+         capture_body_on_failure=excluded.capture_body_on_failure,
          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
     )
     .bind(
@@ -152,6 +156,7 @@ export async function upsertCheck(
       check.intervalMins,
       JSON.stringify(check.tags),
       check.enabled ? 1 : 0,
+      check.captureBodyOnFailure ? 1 : 0,
     )
     .run();
 }
@@ -221,8 +226,9 @@ export function insertResultStatement(
 ): D1PreparedStatement {
   return db
     .prepare(
-      `INSERT INTO check_results (check_id, success, status_code, response_time_ms, error, ran_at)
-       VALUES (?,?,?,?,?,?)`,
+      `INSERT INTO check_results
+         (check_id, success, status_code, response_time_ms, error, ran_at, body_snippet)
+       VALUES (?,?,?,?,?,?,?)`,
     )
     .bind(
       result.checkId,
@@ -231,6 +237,10 @@ export function insertResultStatement(
       result.responseTimeMs,
       result.error,
       result.ranAt,
+      // D1 rejects `undefined`, and a result built by older caller code will
+      // not carry this field. Coerce rather than let one absent optional fail
+      // the whole batch — that would lose every other check's tick too.
+      result.bodySnippet ?? null,
     );
 }
 
@@ -241,7 +251,7 @@ export async function listResults(
 ): Promise<CheckResult[]> {
   const { results } = await db
     .prepare(
-      `SELECT check_id, success, status_code, response_time_ms, error, ran_at
+      `SELECT check_id, success, status_code, response_time_ms, error, ran_at, body_snippet
        FROM check_results WHERE check_id = ? ORDER BY ran_at DESC LIMIT ?`,
     )
     .bind(checkId, limit)
@@ -252,6 +262,7 @@ export async function listResults(
       response_time_ms: number;
       error: string | null;
       ran_at: string;
+      body_snippet: string | null;
     }>();
 
   return (results ?? [])
@@ -262,6 +273,7 @@ export async function listResults(
       responseTimeMs: r.response_time_ms,
       error: r.error,
       ranAt: r.ran_at,
+      bodySnippet: r.body_snippet ?? null,
     }))
     .reverse();
 }

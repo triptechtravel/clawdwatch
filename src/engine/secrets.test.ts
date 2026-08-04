@@ -8,6 +8,8 @@ import {
   assertNoLeakedSecrets,
   scrub,
   truncateError,
+  buildBodySnippet,
+  MAX_BODY_SNIPPET_LENGTH,
   redactCheck,
   toCheckSummary,
   UnresolvedSecretError,
@@ -304,6 +306,44 @@ describe('property: no resolved secret escapes', () => {
       expect(() => assertNoLeakedSecrets(c, SECRETS)).not.toThrow();
       const text = JSON.stringify(redactCheck(c, SECRETS));
       for (const value of VALUES) expect(text).not.toContain(value);
+    }
+  });
+});
+
+describe('buildBodySnippet', () => {
+  it('collapses whitespace to a single line', () => {
+    expect(buildBodySnippet('a\n\n  b\t c ', {})).toBe('a b c');
+  });
+
+  it('returns null for a body with nothing in it', () => {
+    expect(buildBodySnippet('', {})).toBeNull();
+    expect(buildBodySnippet('   \n\t ', {})).toBeNull();
+  });
+
+  it('caps the snippet and marks the cut', () => {
+    const out = buildBodySnippet('y'.repeat(MAX_BODY_SNIPPET_LENGTH * 3), {})!;
+    expect(out.length).toBe(MAX_BODY_SNIPPET_LENGTH);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('leaves a body at exactly the cap untouched', () => {
+    const exact = 'z'.repeat(MAX_BODY_SNIPPET_LENGTH);
+    expect(buildBodySnippet(exact, {})).toBe(exact);
+  });
+
+  it('replaces a secret value with its reference', () => {
+    const out = buildBodySnippet('token=abcdefgh12345 failed', { API_KEY: 'abcdefgh12345' })!;
+    expect(out).toBe('token=${API_KEY} failed');
+  });
+
+  it('scrubs before truncating, so a secret spanning the cut cannot survive', () => {
+    const secret = 'supersecretvalue-0123456789';
+    // Position the secret so it straddles the cap boundary.
+    const prefix = 'p'.repeat(MAX_BODY_SNIPPET_LENGTH - 10);
+    const out = buildBodySnippet(`${prefix}${secret}`, { TOKEN: secret })!;
+    expect(out).not.toContain('supersecret');
+    for (let i = 8; i < secret.length; i++) {
+      expect(out).not.toContain(secret.slice(0, i));
     }
   });
 });

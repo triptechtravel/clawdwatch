@@ -7,7 +7,7 @@
  */
 
 import { Hono } from 'hono';
-import type { CheckConfig, ClawdWatchOptions, SecretMap } from '../types';
+import type { CheckConfig, ClawdWatchDefaults, ClawdWatchOptions, SecretMap } from '../types';
 import { DEFAULTS } from '../types';
 import { redactCheck, LeakedSecretError } from '../engine/secrets';
 import { runCheck } from '../engine/runner';
@@ -38,7 +38,11 @@ export interface RouteConfig<TEnv> {
 }
 
 /** Normalise a partial check from an API body into a full CheckConfig. */
-export function normaliseCheck(input: Record<string, unknown>, existing?: CheckConfig): CheckConfig {
+export function normaliseCheck(
+  input: Record<string, unknown>,
+  existing?: CheckConfig,
+  fleetDefaults?: ClawdWatchDefaults,
+): CheckConfig {
   const pick = <T>(key: string, fallback: T): T =>
     input[key] !== undefined ? (input[key] as T) : fallback;
 
@@ -58,6 +62,7 @@ export function normaliseCheck(input: Record<string, unknown>, existing?: CheckC
     intervalMins: DEFAULTS.intervalMins,
     tags: [],
     enabled: true,
+    captureBodyOnFailure: fleetDefaults?.captureBodyOnFailure ?? DEFAULTS.captureBodyOnFailure,
   };
 
   return {
@@ -76,6 +81,7 @@ export function normaliseCheck(input: Record<string, unknown>, existing?: CheckC
     intervalMins: pick('intervalMins', base.intervalMins),
     tags: pick('tags', base.tags),
     enabled: pick('enabled', base.enabled),
+    captureBodyOnFailure: pick('captureBodyOnFailure', base.captureBodyOnFailure),
   };
 }
 
@@ -184,7 +190,7 @@ export function createRoutes<TEnv>(config: RouteConfig<TEnv>): Hono<{ Bindings: 
     const body = await c.req.json().catch(() => null);
     if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
 
-    const check = normaliseCheck(body);
+    const check = normaliseCheck(body, undefined, options.defaults);
     const problem = validate(check);
     if (problem) return c.json({ error: problem }, 400);
 
@@ -211,7 +217,7 @@ export function createRoutes<TEnv>(config: RouteConfig<TEnv>): Hono<{ Bindings: 
     const body = await c.req.json().catch(() => null);
     if (!body) return c.json({ error: 'Invalid JSON body' }, 400);
 
-    const check = normaliseCheck({ ...body, id: existing.id }, existing);
+    const check = normaliseCheck({ ...body, id: existing.id }, existing, options.defaults);
     const problem = validate(check);
     if (problem) return c.json({ error: problem }, 400);
 
@@ -342,7 +348,7 @@ export function createRoutes<TEnv>(config: RouteConfig<TEnv>): Hono<{ Bindings: 
     const imported: string[] = [];
 
     for (const raw of body.checks) {
-      const check = normaliseCheck(raw as Record<string, unknown>);
+      const check = normaliseCheck(raw as Record<string, unknown>, undefined, options.defaults);
       const problem = validate(check);
       if (problem) return c.json({ error: `${check.id || '(no id)'}: ${problem}` }, 400);
       try {

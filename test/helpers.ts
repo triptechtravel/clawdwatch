@@ -1,6 +1,13 @@
 import { env } from 'cloudflare:test';
-import migration from '../migrations/0001_init.sql?raw';
 import type { CheckConfig } from '../src/types';
+
+// Every migration, not just the first: a new migration file is picked up here
+// automatically, so the suite keeps testing the schema operators actually get.
+const MIGRATIONS = import.meta.glob('../migrations/*.sql', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
 
 declare module 'cloudflare:test' {
   interface ProvidedEnv {
@@ -18,26 +25,31 @@ const TABLES = [
 ];
 
 /**
- * Apply the shipped migration to the test database.
+ * Apply the shipped migrations to the test database, in filename order.
  *
- * This is the point of the suite: the same file operators run through
- * `wrangler d1 migrations apply` is the one the tests execute, so a schema
+ * This is the point of the suite: the same files operators run through
+ * `wrangler d1 migrations apply` are the ones the tests execute, so a schema
  * that drifts from the code fails here rather than on someone's first deploy.
  */
 export async function migrate(): Promise<void> {
-  // Strip comment lines before splitting: a naive split on ';' leaves chunks
-  // that begin with a comment block, and dropping those would silently discard
-  // the CREATE TABLE that follows them.
-  const statements = migration
-    .split('\n')
-    .filter((line) => !line.trim().startsWith('--'))
-    .join('\n')
-    .split(';')
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
+  // Numeric prefixes make lexicographic order the intended order.
+  const ordered = Object.keys(MIGRATIONS).sort();
 
-  for (const statement of statements) {
-    await env.DB.prepare(statement).run();
+  for (const path of ordered) {
+    // Strip comment lines before splitting: a naive split on ';' leaves chunks
+    // that begin with a comment block, and dropping those would silently
+    // discard the CREATE TABLE that follows them.
+    const statements = MIGRATIONS[path]
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('--'))
+      .join('\n')
+      .split(';')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    for (const statement of statements) {
+      await env.DB.prepare(statement).run();
+    }
   }
 }
 
@@ -65,6 +77,7 @@ export function check(overrides: Partial<CheckConfig> = {}): CheckConfig {
     intervalMins: 5,
     tags: [],
     enabled: true,
+    captureBodyOnFailure: false,
     ...overrides,
   };
 }

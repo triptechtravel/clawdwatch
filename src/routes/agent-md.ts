@@ -187,6 +187,29 @@ ${table}
 
 ${ASSERTIONS}
 
+## Payload version
+
+Every alert carries \`schemaVersion\`. Adding an optional field does **not**
+bump it — \`bodySnippet\` was added that way. Removing or renaming a field, or
+changing what one means, does.
+
+Ignore fields you do not recognise, and do not hard fail on a version higher
+than you know: degrade to what you can read. A receiver that refuses unknown
+versions turns every clawdwatch release into a monitoring outage.
+
+## Why a check failed
+
+A check may set \`"captureBodyOnFailure": true\`. When it does, a failing
+result carries \`bodySnippet\`: a short, secret-scrubbed excerpt of the
+response body, capped at 512 characters and taken only from textual content
+types. It appears on the \`failure\` object of \`opened\` and \`reminder\`
+alerts, and on results read back from the API.
+
+It is absent when the check did not opt in, when the check passed, or when the
+body was empty or non-textual — so treat it as optional evidence, not as a
+field you can rely on. When present it is usually the fastest route to a cause:
+a status code tells you a request failed, the body tends to tell you why.
+
 ## Secrets
 
 Never send a literal secret. Reference it by name and the Worker resolves it at

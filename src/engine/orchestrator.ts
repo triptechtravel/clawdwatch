@@ -20,6 +20,7 @@ import type {
   HeaderRule,
   SecretMap,
 } from '../types';
+import { ALERT_SCHEMA_VERSION } from '../types';
 import { toCheckSummary } from './secrets';
 import { computeTransition, emptyState, type Transition } from './transition';
 import { runCheck } from './runner';
@@ -229,6 +230,7 @@ export async function runMonitoringChecks(opts: RunOptions): Promise<RunReport> 
   for (const { check, state, result } of opened) {
     if (suppressed.has(check.id)) continue;
     events.push({
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'opened',
       at,
       check: toCheckSummary(check, state.status),
@@ -237,6 +239,7 @@ export async function runMonitoringChecks(opts: RunOptions): Promise<RunReport> 
         responseTimeMs: result.responseTimeMs,
         assertions: result.error ? result.error.split('; ') : [],
         consecutiveFailures: state.consecutiveFailures,
+        bodySnippet: result.bodySnippet,
       },
       incidentId: state.incidentId!,
       links: linksFor(opts.baseUrl, check, state.incidentId!),
@@ -246,6 +249,7 @@ export async function runMonitoringChecks(opts: RunOptions): Promise<RunReport> 
   for (const { check, state, downtimeMs } of recovered) {
     if (suppressed.has(check.id)) continue;
     events.push({
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'recovered',
       at,
       check: toCheckSummary(check, 'healthy'),
@@ -258,6 +262,7 @@ export async function runMonitoringChecks(opts: RunOptions): Promise<RunReport> 
   for (const { check, state, result, downSinceMs } of reminders) {
     if (suppressed.has(check.id)) continue;
     events.push({
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'reminder',
       at,
       check: toCheckSummary(check, state.status),
@@ -266,6 +271,7 @@ export async function runMonitoringChecks(opts: RunOptions): Promise<RunReport> 
         responseTimeMs: result.responseTimeMs,
         assertions: result.error ? result.error.split('; ') : [],
         consecutiveFailures: state.consecutiveFailures,
+        bodySnippet: result.bodySnippet,
       },
       downSinceMs,
       incidentId: state.incidentId ?? '',
@@ -284,6 +290,7 @@ export async function runMonitoringChecks(opts: RunOptions): Promise<RunReport> 
   if (openedSummaries.length > 0 || recoveredSummaries.length > 0) {
     const anyDown = stillDown.length > 0 || openedSummaries.length > 0;
     events.push({
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'summary',
       at,
       opened: openedSummaries,

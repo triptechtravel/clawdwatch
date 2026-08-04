@@ -29,6 +29,7 @@
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
     "prepublishOnly": "npm run build",
+    "prepare": "npm run build",
     "test:unit": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts"
   },

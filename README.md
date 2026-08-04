@@ -73,6 +73,72 @@ export default { fetch: monitor.fetch, scheduled: monitor.scheduled };
 Response bodies are read to evaluate assertions and then discarded. Only the
 failure message is stored, truncated to 256 characters.
 
+### Sending alerts to a Worker over RPC
+
+When the receiver is a Worker on the same Cloudflare account, a service binding
+beats a webhook: the platform authenticates the call, so there is no shared
+HMAC secret to distribute or rotate and no public inbox to defend.
+
+```ts
+// receiving Worker
+import { WorkerEntrypoint } from 'cloudflare:workers';
+export class AlertInbox extends WorkerEntrypoint<Env> {
+  async alert(event: AlertEvent) { /* … */ }
+}
+```
+
+```jsonc
+// sending Worker config
+"services": [{ "binding": "AGENT", "service": "my-agent", "entrypoint": "AlertInbox" }]
+```
+
+```ts
+import { rpc } from 'clawdwatch';
+notifiers: [rpc({ binding: (env) => env.AGENT })]
+```
+
+Service bindings are same-account only, so `webhook()` remains the option for
+any other receiver. An RPC call carries **no signature** — authenticity comes
+from the binding — so keep signature verification in your HTTP handler and do
+not let shared downstream code assume it ran.
+
+### Alert payload versioning
+
+Every alert carries `schemaVersion` (exported as `ALERT_SCHEMA_VERSION`). The
+contract a receiver can rely on:
+
+- adding an **optional** field does not bump it — `bodySnippet` was added this way;
+- removing or renaming a field, or changing its meaning or type, does.
+
+Receivers should ignore unknown fields and must not hard-fail on a version
+higher than they know — degrade to what they can read. A receiver that rejects
+unknown versions turns every clawdwatch release into a monitoring outage.
+
+### Capturing why a check failed
+
+A status-code assertion tells you a check returned 500. It does not tell you
+what the 500 said — and that is usually where the cause is. Set
+`captureBodyOnFailure` to keep a short excerpt of the body of a **failing**
+response:
+
+```json
+{ "id": "api-health", "url": "https://api.example.com/health",
+  "assertions": [{ "type": "statusCode", "operator": "is", "value": 200 }],
+  "captureBodyOnFailure": true }
+```
+
+Or turn it on for every check at once, and opt individual checks back out:
+
+```ts
+createMonitor({ /* … */ defaults: { captureBodyOnFailure: true } });
+```
+
+The excerpt is capped at 512 characters, taken only from textual content types,
+scrubbed of secret values, and never captured for a passing check. It is
+delivered to webhook notifiers and shown on the dashboard, but deliberately
+**not** posted to Slack. See [SECURITY.md](./SECURITY.md) before enabling it on
+an endpoint whose error bodies may contain personal data.
+
 ## Secrets
 
 A check that needs an API key references it by name:

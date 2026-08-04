@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { slack, buildPayload, formatDuration } from './slack';
 import type { AlertEvent, CheckSummary, NotifierContext } from '../types';
+import { ALERT_SCHEMA_VERSION } from '../types';
 
 const ctx: NotifierContext<unknown> = { env: {}, resolve: (t) => t };
 const AT = '2026-07-27T00:00:00.000Z';
@@ -11,6 +12,7 @@ function summary(name = 'Marketing Site'): CheckSummary {
 
 function opened(): AlertEvent {
   return {
+    schemaVersion: ALERT_SCHEMA_VERSION,
     kind: 'opened',
     at: AT,
     check: summary(),
@@ -61,6 +63,7 @@ describe('buildPayload', () => {
 
   it('builds a recovery message with downtime', () => {
     const event: AlertEvent = {
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'recovered',
       at: AT,
       check: { ...summary(), status: 'healthy' },
@@ -75,6 +78,7 @@ describe('buildPayload', () => {
 
   it('builds a reminder message', () => {
     const event: AlertEvent = {
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'reminder',
       at: AT,
       check: summary(),
@@ -96,6 +100,7 @@ describe('buildPayload', () => {
 
   it('builds all-clear from a summary', () => {
     const event: AlertEvent = {
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'summary',
       at: AT,
       opened: [],
@@ -111,6 +116,7 @@ describe('buildPayload', () => {
 
   it('sends nothing for a summary that is not all-clear', () => {
     const event: AlertEvent = {
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'summary',
       at: AT,
       opened: [summary()],
@@ -169,6 +175,7 @@ describe('slack notifier', () => {
 
   it('sends nothing when the event maps to no message', async () => {
     const event: AlertEvent = {
+      schemaVersion: ALERT_SCHEMA_VERSION,
       kind: 'summary',
       at: AT,
       opened: [summary()],
@@ -186,5 +193,24 @@ describe('slack notifier', () => {
     const n = slack({ webhook: 'x', name: 'slack:status-page', on: ['summary'] });
     expect(n.name).toBe('slack:status-page');
     expect(n.on).toEqual(['summary']);
+  });
+});
+
+describe('body snippet containment', () => {
+  it('never renders a captured body snippet into Slack', () => {
+    // Slack is a wide, retained audience. A snippet is diagnostic detail for
+    // an agent or an operator on the dashboard, not for the channel.
+    const event = opened();
+    event.failure!.bodySnippet = '{"error":"connection refused to db-primary"}';
+    const text = JSON.stringify(buildPayload(event));
+    expect(text).not.toContain('connection refused');
+    expect(text).not.toContain('db-primary');
+  });
+
+  it('still renders the assertion summary alongside a snippet', () => {
+    const event = opened();
+    event.failure!.bodySnippet = '{"error":"connection refused"}';
+    const text = JSON.stringify(buildPayload(event));
+    expect(text).toContain('Expected status 200, got 502');
   });
 });

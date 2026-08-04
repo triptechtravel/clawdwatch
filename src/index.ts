@@ -140,8 +140,11 @@ export type {
 } from './types';
 
 export { DEFAULTS } from './types';
+// Receivers compare the version on an incoming alert against this.
+export { ALERT_SCHEMA_VERSION } from './types';
 export { dispatch, type DeliveryReport } from './notify';
 export { slack, buildPayload, formatDuration } from './notify/slack';
+export { rpc, type RpcOptions, type AlertReceiver } from './notify/rpc';
 export {
   webhook,
   hmac,

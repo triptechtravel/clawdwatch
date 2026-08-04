@@ -11,12 +11,14 @@ import {
   TIMESTAMP_HEADER,
 } from './webhook';
 import type { AlertEvent, NotifierContext } from '../types';
+import { ALERT_SCHEMA_VERSION } from '../types';
 
 const ctx: NotifierContext<unknown> = { env: {}, resolve: (t) => t };
 const NOW = Date.parse('2026-07-27T00:00:00.000Z');
 
 function opened(): AlertEvent {
   return {
+    schemaVersion: ALERT_SCHEMA_VERSION,
     kind: 'opened',
     at: '2026-07-27T00:00:00.000Z',
     check: { id: 'c1', name: 'API', url: 'https://api.test', tags: [], status: 'unhealthy' },
@@ -246,5 +248,44 @@ describe('combineAuth', () => {
     const headers = fetchMock.mock.calls[0][1].headers;
     expect(headers['CF-Access-Client-Id']).toBe('id');
     expect(headers[SIGNATURE_HEADER]).toMatch(/^sha256=/);
+  });
+});
+
+describe('body snippet delivery', () => {
+  it('forwards the captured snippet to the agent inbox', async () => {
+    // The whole point of capture: the receiving agent gets the evidence, not
+    // just "expected 200, got 502".
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const event = opened();
+    event.failure!.bodySnippet = '{"ok":false,"error":"Error with system Redis."}';
+
+    await webhook({ url: 'https://agent.test/inbox' }).notify(event, ctx);
+
+    const sent = fetchMock.mock.calls[0][1].body as string;
+    expect(sent).toContain('Error with system Redis.');
+    expect(JSON.parse(sent).failure.bodySnippet).toBe(
+      '{"ok":false,"error":"Error with system Redis."}',
+    );
+
+    vi.unstubAllGlobals();
+  });
+});
+
+describe('payload versioning', () => {
+  it('stamps the schema version on the delivered payload', async () => {
+    // The wire contract between two independently-deployed projects. A
+    // receiver must be able to tell what shape it is holding.
+    const fetchMock = vi.fn().mockResolvedValue(new Response('ok', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await webhook({ url: 'https://agent.test/inbox' }).notify(opened(), ctx);
+
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(sent.schemaVersion).toBe(ALERT_SCHEMA_VERSION);
+    expect(typeof sent.schemaVersion).toBe('number');
+
+    vi.unstubAllGlobals();
   });
 });

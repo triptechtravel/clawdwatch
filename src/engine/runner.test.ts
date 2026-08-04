@@ -233,3 +233,108 @@ describe('timing', () => {
     expect(result.responseTimeMs).toBe(0);
   });
 });
+
+describe('failure body capture', () => {
+  const capturing = (overrides: Partial<CheckConfig> = {}) =>
+    check({ captureBodyOnFailure: true, ...overrides });
+
+  it('is off by default: a failing check captures nothing', async () => {
+    fetchMock.mockResolvedValue(respond(500, '{"error":"redis is down"}'));
+    const result = await runCheck(check(), ctx());
+    expect(result.success).toBe(false);
+    expect(result.bodySnippet).toBeNull();
+  });
+
+  it('does not read the body at all when capture is off', async () => {
+    const body = new Response('{"error":"redis is down"}', { status: 500 });
+    const spy = vi.spyOn(body, 'body', 'get');
+    fetchMock.mockResolvedValue(body);
+    await runCheck(check(), ctx());
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('captures a snippet when the check fails and capture is on', async () => {
+    fetchMock.mockResolvedValue(
+      respond(500, '{"ok":false,"error":"Error with system Redis. Cannot execute queries."}'),
+    );
+    const result = await runCheck(capturing(), ctx());
+    expect(result.success).toBe(false);
+    expect(result.bodySnippet).toContain('Error with system Redis');
+  });
+
+  it('captures nothing when the check passes', async () => {
+    fetchMock.mockResolvedValue(respond(200, '{"ok":true}'));
+    const result = await runCheck(capturing(), ctx());
+    expect(result.success).toBe(true);
+    expect(result.bodySnippet).toBeNull();
+  });
+
+  it('scrubs secret values that the response echoes back', async () => {
+    fetchMock.mockResolvedValue(respond(500, 'failed with key hc-super-secret-value'));
+    const result = await runCheck(
+      capturing({ headers: { 'X-Key': '${HEALTHCHECK_SECRET}' } }),
+      ctx(),
+    );
+    expect(result.bodySnippet).not.toContain('hc-super-secret-value');
+    expect(result.bodySnippet).toContain('${HEALTHCHECK_SECRET}');
+    expect(JSON.stringify(result)).not.toContain('hc-super-secret-value');
+  });
+
+  it('truncates a long body', async () => {
+    fetchMock.mockResolvedValue(respond(500, 'x'.repeat(5000)));
+    const result = await runCheck(capturing(), ctx());
+    expect(result.bodySnippet!.length).toBeLessThanOrEqual(512);
+    expect(result.bodySnippet!.endsWith('…')).toBe(true);
+  });
+
+  it('collapses whitespace so multi-line bodies stay readable', async () => {
+    fetchMock.mockResolvedValue(respond(500, '<html>\n  <body>\n    Bad Gateway\n  </body>\n'));
+    const result = await runCheck(capturing(), ctx());
+    expect(result.bodySnippet).toBe('<html> <body> Bad Gateway </body>');
+  });
+
+  it('returns null for an empty body', async () => {
+    fetchMock.mockResolvedValue(respond(500, ''));
+    const result = await runCheck(capturing(), ctx());
+    expect(result.bodySnippet).toBeNull();
+  });
+
+  it('skips a non-textual content type', async () => {
+    fetchMock.mockResolvedValue(
+      respond(500, 'PNGbinarydata', { 'content-type': 'application/octet-stream' }),
+    );
+    const result = await runCheck(capturing(), ctx());
+    expect(result.bodySnippet).toBeNull();
+  });
+
+  it('reuses a body already read for an assertion instead of re-reading', async () => {
+    fetchMock.mockResolvedValue(respond(500, '{"status":"degraded"}'));
+    const result = await runCheck(
+      capturing({
+        assertions: [{ type: 'jsonPath', path: '$.status', operator: 'is', value: 'healthy' }],
+      }),
+      ctx(),
+    );
+    expect(result.success).toBe(false);
+    expect(result.bodySnippet).toContain('degraded');
+  });
+
+  it('captures nothing when the request never produced a response', async () => {
+    fetchMock.mockRejectedValue(new Error('connection refused'));
+    const result = await runCheck(capturing(), ctx());
+    expect(result.success).toBe(false);
+    expect(result.bodySnippet).toBeNull();
+  });
+
+  it('does not fail the run when the body cannot be read', async () => {
+    const body = respond(500, 'unused');
+    vi.spyOn(body, 'body', 'get').mockImplementation(() => {
+      throw new Error('stream exploded');
+    });
+    fetchMock.mockResolvedValue(body);
+    const result = await runCheck(capturing(), ctx());
+    expect(result.success).toBe(false);
+    expect(result.statusCode).toBe(500);
+    expect(result.bodySnippet).toBeNull();
+  });
+});
