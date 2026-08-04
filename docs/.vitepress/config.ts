@@ -5,11 +5,23 @@ export default defineConfig({
   description:
     "Synthetic monitoring for Cloudflare Workers — deterministic detection, pluggable alerting, and a dashboard worth reading",
   base: "/clawdwatch/",
+  cleanUrls: true,
+  head: [
+    ["link", { rel: "preconnect", href: "https://fonts.googleapis.com" }],
+    ["link", { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" }],
+    [
+      "link",
+      {
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap",
+      },
+    ],
+  ],
   themeConfig: {
     nav: [
       { text: "Guide", link: "/guide/getting-started" },
       { text: "Alerting", link: "/integration/notifiers" },
-      { text: "GitHub", link: "https://github.com/triptechtravel/clawdwatch" },
+      { text: "thinkbot", link: "https://triptechtravel.github.io/thinkbot/" },
     ],
     sidebar: [
       {
