@@ -5,7 +5,12 @@ deployed recently, correlate it with your error tracker, and tell you *why*
 the endpoint is failing.
 
 clawdwatch supports this without knowing anything about your agent. There is no
-plugin to install, no fork, no skill file to copy. An agent inbox is a URL.
+plugin to install, no fork, no skill file to copy. An agent inbox is a URL — or,
+if your agent is a Worker on the same account, a [service binding](/integration/notifiers#rpc-worker-to-worker).
+
+[thinkbot](https://github.com/triptechtravel/thinkbot) is a working
+implementation of everything on this page, if you would rather read code than
+prose — or deploy one rather than write one.
 
 ## Sending alerts
 
@@ -78,6 +83,54 @@ curl -X POST "$ANNOTATE_LINK" \
   -H 'Content-Type: application/json' \
   -d '{"annotation":"Deploy 4f21c9 merged 13:55 touched auth middleware; error tracker shows a matching spike from 14:03. Likely cause — rollback candidate."}'
 ```
+
+## Giving the agent the evidence
+
+A status-code assertion tells an agent that an endpoint returned 500. It does
+not tell it what the 500 *said* — and that is usually where the cause is.
+
+Set `captureBodyOnFailure` on a check and a failing alert carries a
+`bodySnippet`: an excerpt of the response body, capped at 512 characters, taken
+only from textual content types, and scrubbed of secret values before it is
+truncated.
+
+```json
+{ "id": "api-health", "url": "https://api.example.com/health",
+  "assertions": [{ "type": "statusCode", "operator": "is", "value": 200 }],
+  "captureBodyOnFailure": true }
+```
+
+Or fleet-wide, opting individual checks back out:
+
+```ts
+createMonitor({ /* … */ defaults: { captureBodyOnFailure: true } });
+```
+
+It is never captured for a passing check, and never posted to Slack — a channel
+is a wider and more retained audience than an agent inbox. It reaches webhook
+and RPC notifiers, and the dashboard.
+
+::: warning
+This is off by default for a reason. Do not enable it on an endpoint whose
+error paths can return personal data. See
+[SECURITY.md](https://github.com/triptechtravel/clawdwatch/blob/main/SECURITY.md).
+:::
+
+An agent should treat the snippet as an excerpt, not the whole response — it is
+truncated and scrubbed, so it is a lead to verify rather than a quote to cite.
+
+## Surviving a version change
+
+Every alert carries `schemaVersion` (exported as `ALERT_SCHEMA_VERSION`). The
+contract:
+
+- adding an **optional** field does not bump it — `bodySnippet` was added this way;
+- removing or renaming a field, or changing its meaning, does.
+
+A receiver should ignore fields it does not recognise and must not hard-fail on
+a version higher than it knows — degrade to what it can read. An agent that
+rejects unknown versions turns every clawdwatch release into a monitoring
+outage. The two systems deploy independently; skew is normal, not exceptional.
 
 ## Standing access
 

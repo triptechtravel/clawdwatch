@@ -39,6 +39,7 @@ const monitor = createMonitor<Env>({
 | `concurrency` | `6` | Checks executed at once |
 | `historyRetentionHours` | `48` | How long results are kept |
 | `userAgent` | `clawdwatch/3.0` | Sent unless a check overrides it |
+| `captureBodyOnFailure` | `false` | Keep a scrubbed excerpt of a **failing** response. See [AI agents](/integration/agents#giving-the-agent-the-evidence) |
 
 ## Check options
 
@@ -58,7 +59,8 @@ const monitor = createMonitor<Env>({
   "reminderIntervalMs": 3600000,
   "intervalMins": 5,
   "tags": ["production", "api"],
-  "enabled": true
+  "enabled": true,
+  "captureBodyOnFailure": false
 }
 ```
 

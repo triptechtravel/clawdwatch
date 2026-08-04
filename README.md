@@ -71,7 +71,8 @@ export default { fetch: monitor.fetch, scheduled: monitor.scheduled };
 | `jsonPath` | `is`, `isNot`, `contains`, `notContains`, `matches`, `lessThan`, `greaterThan` |
 
 Response bodies are read to evaluate assertions and then discarded. Only the
-failure message is stored, truncated to 256 characters.
+failure message is stored, truncated to 256 characters — unless a check opts in
+to [capturing why it failed](#capturing-why-a-check-failed).
 
 ### Sending alerts to a Worker over RPC
 
@@ -201,6 +202,11 @@ An agent triaging an incident can write its findings back with
 `POST /api/incidents/:id/annotate`; the note appears on the incident in the
 dashboard.
 
+**A worked example:** [thinkbot](https://github.com/triptechtravel/thinkbot) is
+an ops agent built on all of this — it receives alerts over a webhook or an RPC
+binding, correlates them against GitHub, Datadog, Sentry and Rollbar, and
+reports what changed. Read it as a reference receiver, or deploy it as-is.
+
 ## Auth
 
 Mount behind [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/).
@@ -222,10 +228,14 @@ Both Access claim shapes are handled: people (`email`) and service tokens
 
 ## Documentation
 
-- [Getting started](docs/guide/getting-started.md)
-- [Configuration](docs/guide/configuration.md)
-- [API reference](docs/guide/api-reference.md)
-- [Deploying](docs/integration/wrangler.md)
+**[triptechtravel.github.io/clawdwatch](https://triptechtravel.github.io/clawdwatch/)**
+
+- [Getting started](https://triptechtravel.github.io/clawdwatch/guide/getting-started)
+- [Configuration](https://triptechtravel.github.io/clawdwatch/guide/configuration)
+- [Notifiers](https://triptechtravel.github.io/clawdwatch/integration/notifiers) — Slack, webhook, RPC
+- [AI agents](https://triptechtravel.github.io/clawdwatch/integration/agents) — body capture, payload versioning
+- [API reference](https://triptechtravel.github.io/clawdwatch/guide/api-reference)
+- [Deploying](https://triptechtravel.github.io/clawdwatch/integration/wrangler)
 
 ## Development
 

@@ -93,6 +93,54 @@ webhook({
 caller is allowed through the edge, the signature proves the payload is
 authentic.
 
+## RPC (Worker to Worker)
+
+When the receiver is a Worker on the same Cloudflare account, a service binding
+beats a webhook. The platform authenticates the call, so there is no shared
+secret to distribute or rotate, no public inbox to defend, and no replay window
+to reason about.
+
+The receiver exposes an entrypoint:
+
+```ts
+import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { AlertEvent } from 'clawdwatch';
+
+export class AlertInbox extends WorkerEntrypoint<Env> {
+  async alert(event: AlertEvent) {
+    // Return promptly. Delivery outcomes are recorded, so holding the caller
+    // open for slow work shows up as a slow or failed notification.
+    this.ctx.waitUntil(handle(event));
+  }
+}
+```
+
+The sender binds it:
+
+```jsonc
+"services": [
+  { "binding": "AGENT", "service": "my-agent", "entrypoint": "AlertInbox" }
+]
+```
+
+```ts
+import { rpc } from 'clawdwatch';
+
+notifiers: [rpc({ binding: (env) => env.AGENT })]
+```
+
+Use `method` if your entrypoint names it something other than `alert`.
+
+This does not replace `webhook()`. Service bindings are same-account only, so
+any other receiver — a self-hosted agent, an automation platform, someone
+else's deployment — still needs a URL.
+
+::: warning No signature
+An RPC call carries no signature; authenticity comes from the binding. Keep
+signature verification in your HTTP handler, and make sure shared downstream
+code does not assume it ran.
+:::
+
 ## Filtering
 
 ```ts
