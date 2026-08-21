@@ -250,4 +250,4 @@ the SQL is genuinely exercised rather than mocked.
 
 ## License
 
-Apache-2.0
+MIT

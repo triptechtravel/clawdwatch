@@ -86,4 +86,4 @@ standing credential.
 this. It takes an alert, correlates it against GitHub, Datadog, Sentry and
 Rollbar, and reports what changed — the step monitoring cannot do on its own.
 
-Apache-2.0. [Source on GitHub](https://github.com/triptechtravel/clawdwatch).
+MIT. [Source on GitHub](https://github.com/triptechtravel/clawdwatch).
